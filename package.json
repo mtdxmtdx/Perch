@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "Windows 桌宠：会聊天、能看文件、帮你盯着 Claude Code / Codex / DeepSeek Harness 干活",
-  "license": "GPL-3.0-only",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/mtdxmtdx/Perch.git"
