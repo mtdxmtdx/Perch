@@ -291,6 +291,17 @@ pub fn status_resize(app: AppHandle, width: f64, height: f64) {
     windows::resize_status(&app, width, height);
 }
 
+/// 开机自启动开没开（以注册表为准）
+#[tauri::command]
+pub fn autostart_get() -> bool {
+    crate::autostart::is_enabled()
+}
+
+#[tauri::command]
+pub fn autostart_set(enabled: bool) -> Result<(), String> {
+    crate::autostart::set(enabled)
+}
+
 #[tauri::command]
 pub fn open_chat(app: AppHandle) {
     windows::open_chat(&app);

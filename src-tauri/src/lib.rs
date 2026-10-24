@@ -1,4 +1,5 @@
 pub mod agents;
+mod autostart;
 mod chat;
 mod commands;
 mod config;
@@ -169,6 +170,8 @@ pub fn run() {
             commands::bubble_close,
             commands::bubble_resize,
             commands::status_resize,
+            commands::autostart_get,
+            commands::autostart_set,
             commands::open_chat,
             commands::open_settings,
             commands::pet_drop_files,

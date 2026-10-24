@@ -61,7 +61,7 @@ const STYLES: [string, string][] = [
   ["deepseek", "DeepSeek 格式（thinking + reasoning_effort）"],
 ];
 
-type Tab = "models" | "personas" | "tools" | "voice" | "agents" | "memory" | "params";
+type Tab = "models" | "personas" | "tools" | "voice" | "agents" | "memory" | "params" | "general";
 
 export function Settings() {
   const [tab, setTab] = useState<Tab>("models");
@@ -132,6 +132,7 @@ export function Settings() {
             ["agents", "Agent 接入"],
             ["memory", "记忆"],
             ["params", "对话参数"],
+            ["general", "常规"],
           ] as [Tab, string][]
         ).map(([t, label]) => (
           <button key={t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
@@ -147,6 +148,7 @@ export function Settings() {
         {tab === "agents" && <AgentsTab draft={draft} update={update} />}
         {tab === "memory" && <MemoryTab />}
         {tab === "params" && <ParamsTab draft={draft} update={update} />}
+        {tab === "general" && <GeneralTab />}
       </main>
       {tab !== "memory" && (
         <footer>
@@ -849,6 +851,41 @@ function MemoryEditor({ edit, setEdit, save }: { edit: { id: number | null; kind
         保存
       </button>
       <button onClick={() => setEdit(null)}>取消</button>
+    </div>
+  );
+}
+
+/** 常规：开机自启动（直接写注册表，立即生效，不用点保存） */
+function GeneralTab() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => void api.autostartGet().then(setOn), []);
+
+  const toggle = async (v: boolean) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.autostartSet(v);
+    } catch (e) {
+      setErr(errorText(e));
+    }
+    setOn(await api.autostartGet());
+    setBusy(false);
+  };
+
+  return (
+    <div className="tab">
+      <section>
+        <h3>启动</h3>
+        <div className="checks">
+          <label>
+            <input type="checkbox" checked={!!on} disabled={on === null || busy} onChange={(e) => void toggle(e.target.checked)} /> 开机时自动启动 Perch
+          </label>
+        </div>
+        <p className="muted small">默认关闭。只对当前 Windows 用户生效，改了立即生效；也可以在任务管理器的「启动应用」里管理。</p>
+        {err && <div className="error">{err}</div>}
+      </section>
     </div>
   );
 }
