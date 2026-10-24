@@ -1,8 +1,10 @@
 //! 本地语音输入：按住说话 → 麦克风录音 → Silero VAD 去掉静音 → SenseVoice 离线识别 → 直接发送（或填进输入框）。
+//! 可选功能，默认关闭；开启后才加载语音运行库（见 runtime.rs），不开时程序不需要那些 DLL。
 
 pub mod asr;
 pub mod mic;
 pub mod models;
+pub mod runtime;
 
 use crate::{chat, windows, AppState};
 use serde::Serialize;
@@ -84,6 +86,15 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     if rec.is_some() {
         return Ok(());
     }
+    let (enabled, runtime_dir) = {
+        let cfg = state.config.lock().unwrap();
+        (cfg.voice.enabled, cfg.voice.runtime_dir.clone())
+    };
+    if !enabled {
+        return Err("语音输入没有开启，可以到 设置 → 语音 里打开".into());
+    }
+    // 调用任何 sherpa 接口之前先把运行库加载进来
+    runtime::ensure_loaded(runtime_dir.as_deref())?;
     model_paths(app)?;
     let device = state.config.lock().unwrap().voice.device.clone();
     let app2 = app.clone();
@@ -213,6 +224,12 @@ pub fn cancel(app: &AppHandle) {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    /// 找到了语音运行库
+    pub runtime_ready: bool,
+    pub runtime_dir: Option<String>,
+    /// 这次运行已经从哪里加载了运行库（换文件夹要重启才生效）
+    pub runtime_loaded_from: Option<String>,
+    pub runtime_download_dir: String,
     pub model_ready: bool,
     pub missing: Vec<String>,
     pub downloading: bool,
@@ -223,10 +240,18 @@ pub struct Status {
 
 pub fn status(app: &AppHandle) -> Status {
     let state = app.state::<AppState>();
-    let dir = state.config.lock().unwrap().voice.model_dir.clone();
+    let (dir, runtime_dir) = {
+        let cfg = state.config.lock().unwrap();
+        (cfg.voice.model_dir.clone(), cfg.voice.runtime_dir.clone())
+    };
     let located = models::locate(dir.as_deref());
     let hotkey_error = state.voice.hotkey_error.lock().unwrap().clone();
+    let runtime_found = runtime::locate(runtime_dir.as_deref());
     Status {
+        runtime_ready: runtime_found.is_some(),
+        runtime_dir: runtime_found.map(|d| d.display().to_string()),
+        runtime_loaded_from: runtime::loaded_from().map(|d| d.display().to_string()),
+        runtime_download_dir: runtime::default_dir().display().to_string(),
         model_ready: located.is_ok(),
         missing: located.err().unwrap_or_default(),
         downloading: state.voice.downloading.load(Ordering::SeqCst),
@@ -236,17 +261,23 @@ pub fn status(app: &AppHandle) -> Status {
     }
 }
 
-/// 下载模型；进度通过 "voice-download" 事件发出
+/// 下载语音组件：缺运行库先下运行库，再下缺少的模型；进度通过 "voice-download" 事件发出
 pub async fn download(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     if state.voice.downloading.swap(true, Ordering::SeqCst) {
         return Err("正在下载中".into());
     }
     state.voice.cancel_download.store(false, Ordering::SeqCst);
-    let app2 = app.clone();
-    let r = models::download_all(&state.voice.cancel_download, move |p| {
-        let _ = app2.emit("voice-download", p);
-    })
+    let runtime_dir = state.config.lock().unwrap().voice.runtime_dir.clone();
+    let progress = |p: models::Progress| {
+        let _ = app.emit("voice-download", p);
+    };
+    let r = async {
+        if runtime::locate(runtime_dir.as_deref()).is_none() {
+            models::download_runtime(&state.voice.cancel_download, progress).await?;
+        }
+        models::download_all(&state.voice.cancel_download, progress).await
+    }
     .await;
     state.voice.downloading.store(false, Ordering::SeqCst);
     let _ = app.emit("voice-download-done", r.as_ref().err().cloned());
@@ -268,9 +299,18 @@ pub fn parse_hotkey(s: &str) -> Result<Option<Shortcut>, String> {
 
 /// 按配置重新注册按住说话的快捷键
 pub fn register_hotkey(app: &AppHandle) -> Result<(), String> {
-    let hotkey = app.state::<AppState>().config.lock().unwrap().voice.hotkey.clone();
+    let (enabled, hotkey) = {
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
+        (cfg.voice.enabled, cfg.voice.hotkey.clone())
+    };
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
+    // 语音输入关着时不占用快捷键
+    if !enabled {
+        *app.state::<AppState>().voice.hotkey_error.lock().unwrap() = None;
+        return Ok(());
+    }
     let r = parse_hotkey(&hotkey).and_then(|sc| match sc {
         Some(sc) => gs.register(sc).map_err(|e| format!("快捷键「{hotkey}」注册失败（可能被别的程序占用了）：{e}")),
         None => Ok(()),

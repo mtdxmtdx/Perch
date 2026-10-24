@@ -237,14 +237,16 @@ export function ChatWindow() {
           <button className="icon" title="添加图片或文件" onClick={async () => atts.add(await pickFiles())}>
             📎
           </button>
-          <button
-            className={`icon mic ${voice.state === "recording" ? "on" : ""}`}
-            title="按住说话，松开识别"
-            disabled={voice.state === "recognizing" || chat.busy}
-            {...voice.holdProps}
-          >
-            🎤
-          </button>
+          {voice.enabled && (
+            <button
+              className={`icon mic ${voice.state === "recording" ? "on" : ""}`}
+              title="按住说话，松开识别"
+              disabled={voice.state === "recognizing" || chat.busy}
+              {...voice.holdProps}
+            >
+              🎤
+            </button>
+          )}
           <textarea
             value={text}
             rows={2}

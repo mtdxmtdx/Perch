@@ -106,7 +106,10 @@ fn validate(s: &SettingsIn) -> Result<(), String> {
 pub fn settings_save(app: AppHandle, state: State<AppState>, settings: SettingsIn) -> Result<(), String> {
     validate(&settings)?;
     crate::voice::parse_hotkey(&settings.voice.hotkey)?;
-    let hotkey_changed = state.config.lock().unwrap().voice.hotkey != settings.voice.hotkey;
+    let hotkey_changed = {
+        let old = &state.config.lock().unwrap().voice;
+        old.hotkey != settings.voice.hotkey || old.enabled != settings.voice.enabled
+    };
     let (skin_changed, removed): (bool, Vec<String>) = {
         let mut cfg = state.config.lock().unwrap();
         let removed = cfg

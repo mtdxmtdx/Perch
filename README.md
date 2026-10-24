@@ -30,10 +30,11 @@ Perch 平时站在任务栏和窗口的顶边上，走来走去、跳上跳下�
 - 内置读、写、编辑文件三个工具，只能访问白名单目录；读文件不打扰，写入和编辑会在气泡里显示 diff 等你确认。没有 shell。
 - 云端生图（OpenAI 兼容的 `/images/generations`）：`/draw 描述`，或者明确让她画；有每日上限。
 
-**语音输入**
+**语音输入（可选，默认关闭）**
 - 本地识别：SenseVoice + Silero VAD（sherpa-onnx），不上传录音。
+- 在「设置 → 语音」里开启，一键下载语音组件：运行库约 7.5MB（来自 sherpa-onnx 官方发布），模型约 240MB（优先走 hf-mirror 镜像）；也可以指定已有的运行库和模型文件夹。
 - 按住快捷键（默认 `Ctrl+Shift+Space`）或 🎤 说话，边说边在输入框里预览，松开即识别并发送。
-- 模型第一次使用时下载（优先走 hf-mirror 镜像）。
+- 不开启时不加载任何语音组件，程序本身不依赖它们。
 
 **Agent 状态汇报**
 - **Claude Code**：在 `~/.claude/settings.json` 写入 http 类型 hooks。
@@ -55,7 +56,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-第一次构建时，`sherpa-onnx` 会从 GitHub 下载预编译库，构建脚本会把 `sherpa-onnx-c-api.dll`、`onnxruntime.dll` 等复制到程序旁边。
+第一次构建时，`sherpa-onnx` 会从 GitHub 下载预编译库，构建脚本会把 `sherpa-onnx-c-api.dll`、`onnxruntime.dll` 等复制到程序旁边，所以从源码运行时不用再下载语音运行库。程序对这些 DLL 是延迟加载的：只有开启语音输入后才会加载。
 
 运行测试：
 
@@ -67,7 +68,7 @@ cargo test --lib
 ## 使用
 
 1. 右键托盘图标 →「设置」，在「模型」里添加服务商（地址、模型名、API Key），在「人格」里写好她的性格。
-2. 单击桌宠开始聊天；按住 `Ctrl+Shift+Space` 说话。
+2. 单击桌宠开始聊天。想用语音输入，到「语音」里开启并下载语音组件，之后按住 `Ctrl+Shift+Space` 说话。
 3. 想让她读写文件，先在「工具与生图」里加白名单目录；生图服务也在这里配置。
 4. 在「Agent 接入」里打开需要的接入：
    - Codex：开启或修复后，要在 Codex 里输入 `/hooks` 信任桌宠的 hooks。
@@ -77,7 +78,7 @@ cargo test --lib
 
 ## 数据与隐私
 
-- 设置、聊天记录、记忆、语音模型都在 `%APPDATA%\Perch`；API Key 存在 Windows 凭据管理器，不写进配置文件。
+- 设置、聊天记录、记忆、语音模型和运行库都在 `%APPDATA%\Perch`；API Key 存在 Windows 凭据管理器，不写进配置文件。
 - 聊天内容会发给你配置的模型服务商。开启「完成时用人格口吻总结」后，agent 的最后一条回复也会发给辅助模型；关掉则不转发任何内容。
 - 语音识别完全在本地进行。
 - Agent 接入会修改对应工具的配置文件：第一次改动前自动备份，只增删桌宠自己的条目，关闭接入即可移除。
@@ -85,8 +86,8 @@ cargo test --lib
 
 ## 已知限制
 
-- **安装包还没配好语音识别所需的 DLL。** 程序动态链接 sherpa-onnx，`pnpm tauri build` 生成的安装包里缺少 `sherpa-onnx-c-api.dll`、`onnxruntime.dll` 等文件，安装后无法启动。目前请从源码运行。
-- 系统目录里如果有旧版 `onnxruntime.dll`，它可能抢先被加载导致崩溃；正确的 DLL 必须放在程序旁边。
+- 安装包不附带语音运行库，开启语音输入时在设置里下载（运行库来自 GitHub，网络不好时可以手动下载 [sherpa-onnx v2.0.0 的 Windows 动态库](https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.0/sherpa-onnx-v2.0.0-win-x64-shared-MT-Release-lib.tar.bz2)，解压后在设置里指定 `lib` 文件夹）。
+- 换了运行库文件夹要重启程序才生效。
 - 只支持 Windows。
 - 预留了接口、尚未实现：桌宠主动聊天、TTS 语音输出、向量检索记忆、在桌宠里审批 agent 授权、Live2D、本地生图。
 

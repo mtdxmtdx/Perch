@@ -63,13 +63,19 @@ export interface ImageParams {
 }
 
 export interface VoiceParams {
+  enabled: boolean;
   hotkey: string;
   auto_send: boolean;
   device: string | null;
   model_dir: string | null;
+  runtime_dir: string | null;
 }
 
 export interface VoiceStatus {
+  runtimeReady: boolean;
+  runtimeDir: string | null;
+  runtimeLoadedFrom: string | null;
+  runtimeDownloadDir: string;
   modelReady: boolean;
   missing: string[];
   downloading: boolean;

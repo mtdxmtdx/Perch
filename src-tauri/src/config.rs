@@ -53,6 +53,8 @@ impl Default for AgentsParams {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceParams {
+    /// 开启语音输入（默认关闭：要先下载语音组件，或者指定已有的运行库和模型）
+    pub enabled: bool,
     /// 按住说话的全局快捷键，例如 Ctrl+Shift+Space；为空表示不用快捷键
     pub hotkey: String,
     /// 识别完直接发送；false 时只填进输入框
@@ -61,11 +63,13 @@ pub struct VoiceParams {
     pub device: Option<String>,
     /// 手动指定的 SenseVoice 模型文件夹；为空用自动下载的
     pub model_dir: Option<String>,
+    /// 手动指定的语音运行库文件夹（里面有 sherpa-onnx-c-api.dll 和 onnxruntime.dll）；为空用下载的
+    pub runtime_dir: Option<String>,
 }
 
 impl Default for VoiceParams {
     fn default() -> Self {
-        Self { hotkey: "Ctrl+Shift+Space".into(), auto_send: true, device: None, model_dir: None }
+        Self { enabled: false, hotkey: "Ctrl+Shift+Space".into(), auto_send: true, device: None, model_dir: None, runtime_dir: None }
     }
 }
 
@@ -383,10 +387,13 @@ fn config_path() -> PathBuf {
 }
 
 pub fn load() -> Config {
-    let mut cfg: Config = std::fs::read_to_string(config_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    let raw: Option<serde_json::Value> = std::fs::read_to_string(config_path()).ok().and_then(|s| serde_json::from_str(&s).ok());
+    let mut cfg: Config = raw.clone().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    // 语音输入开关是后来加的：老配置里没有这一项时，模型和运行库都在就保持开启，否则关闭
+    if raw.as_ref().is_some_and(|v| v.pointer("/voice/enabled").is_none()) {
+        cfg.voice.enabled = crate::voice::models::locate(cfg.voice.model_dir.as_deref()).is_ok()
+            && crate::voice::runtime::locate(cfg.voice.runtime_dir.as_deref()).is_some();
+    }
     cfg.normalize();
     cfg
 }

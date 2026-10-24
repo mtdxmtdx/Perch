@@ -100,7 +100,7 @@ fn host_of(url: &str) -> String {
 }
 
 /// 下载一个文件：.part 断点续传，下完校验大小再改名
-async fn fetch(
+pub(super) async fn fetch(
     http: &reqwest::Client,
     url: &str,
     dest: &Path,
@@ -160,13 +160,34 @@ async fn fetch(
     std::fs::rename(&part, dest).map_err(|e| e.to_string())
 }
 
-/// 下载所有缺少的文件；每个文件依次尝试各个来源
-pub async fn download_all(cancel: &AtomicBool, mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
-    let http = reqwest::Client::builder()
+fn client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .user_agent("perch")
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+/// 下载语音运行库（sherpa-onnx 官方发布的 Windows 动态库，约 7.5MB）并解压出需要的 DLL
+pub async fn download_runtime(cancel: &AtomicBool, mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
+    use super::runtime;
+    let http = client()?;
+    let archive = runtime::archive_path();
+    std::fs::create_dir_all(runtime::default_dir()).map_err(|e| e.to_string())?;
+    fetch(&http, runtime::ARCHIVE_URL, &archive, &[runtime::ARCHIVE_SIZE], cancel, &mut on_progress)
+        .await
+        .map_err(|e| format!("语音运行库下载失败：{e}"))?;
+    let a = archive.clone();
+    tokio::task::spawn_blocking(move || runtime::extract(&a, &runtime::default_dir()))
+        .await
+        .map_err(|e| e.to_string())??;
+    let _ = std::fs::remove_file(&archive);
+    Ok(())
+}
+
+/// 下载所有缺少的文件；每个文件依次尝试各个来源
+pub async fn download_all(cancel: &AtomicBool, mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
+    let http = client()?;
     let base = default_dir();
     for f in FILES {
         let dest = base.join(f.path);
