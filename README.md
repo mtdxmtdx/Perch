@@ -101,4 +101,9 @@ cargo test --lib
 
 ## 许可证
 
-[GNU General Public License v3.0 only](LICENSE)（SPDX：`GPL-3.0-only`）。
+[PolyForm Noncommercial License 1.0.0](LICENSE)（SPDX：`PolyForm-Noncommercial-1.0.0`）。
+
+- 允许非商业用途的使用和修改：个人学习、研究、娱乐和爱好项目，以及慈善机构、教育机构、公共研究机构、公共安全或卫生组织、环保组织、政府机构使用。**禁止商业用途**，需要商用授权请通过 [GitHub Issues](https://github.com/mtdxmtdx/Perch/issues) 联系作者。
+- 再分发时要附上许可证全文（或链接）和 `LICENSE` 开头的 `Required Notice` 版权声明。
+- 这是"源码公开、禁止商用"的许可证，不属于 OSI 定义的开源许可证。
+- **v0.1.0 及之前的版本以 [GPL-3.0-only](https://www.gnu.org/licenses/gpl-3.0.html) 发布**，那些版本仍按 GPL 授权；之后的版本使用本许可证。

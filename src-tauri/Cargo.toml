@@ -3,7 +3,7 @@ name = "perch"
 version = "0.1.0"
 edition = "2021"
 description = "Windows 桌宠：会聊天、能看文件、帮你盯着编程 agent 干活"
-license = "GPL-3.0-only"
+license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/mtdxmtdx/Perch"
 
 [lib]
