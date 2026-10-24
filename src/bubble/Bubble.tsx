@@ -241,14 +241,16 @@ export function Bubble() {
                 </button>
               ) : (
                 <>
-                  <button
-                    className={`icon mic ${voice.state === "recording" ? "on" : ""}`}
-                    title="按住说话，松开识别"
-                    disabled={voice.state === "recognizing"}
-                    {...voice.holdProps}
-                  >
-                    🎤
-                  </button>
+                  {voice.enabled && (
+                    <button
+                      className={`icon mic ${voice.state === "recording" ? "on" : ""}`}
+                      title="按住说话，松开识别"
+                      disabled={voice.state === "recognizing"}
+                      {...voice.holdProps}
+                    >
+                      🎤
+                    </button>
+                  )}
                   <button className="icon" title="添加图片或文件（也可以直接拖进来、粘贴图片）" onClick={() => void attach()}>
                     📎
                   </button>

@@ -17,6 +17,8 @@ export function useVoice(input: { text: string; setText: (t: string) => void }) 
   const [state, setState] = useState<VoiceState>("idle");
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  /** 设置里开启了语音输入（关着时不显示 🎤） */
+  const [enabled, setEnabled] = useState(false);
   /** 识别出来并已经发送的话，显示一会儿 */
   const [heard, setHeard] = useState<string | null>(null);
   const inputRef = useRef(input);
@@ -78,6 +80,13 @@ export function useVoice(input: { text: string; setText: (t: string) => void }) 
     return () => void un.then((f) => f());
   }, []);
 
+  useEffect(() => {
+    const load = () => void api.settingsGet().then((s) => setEnabled(s.voice.enabled));
+    load();
+    const un = listen("settings-changed", load);
+    return () => void un.then((f) => f());
+  }, []);
+
   // 提示过一会儿自动消失
   useEffect(() => {
     if (!error) return;
@@ -112,5 +121,5 @@ export function useVoice(input: { text: string; setText: (t: string) => void }) 
     onPointerCancel: () => cancel(),
   };
 
-  return { state, level, error, setError, heard, setHeard, start, stop, cancel, holdProps };
+  return { enabled, state, level, error, setError, heard, setHeard, start, stop, cancel, holdProps };
 }

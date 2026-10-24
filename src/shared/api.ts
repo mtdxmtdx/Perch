@@ -63,13 +63,19 @@ export interface ImageParams {
 }
 
 export interface VoiceParams {
+  enabled: boolean;
   hotkey: string;
   auto_send: boolean;
   device: string | null;
   model_dir: string | null;
+  runtime_dir: string | null;
 }
 
 export interface VoiceStatus {
+  runtimeReady: boolean;
+  runtimeDir: string | null;
+  runtimeLoadedFrom: string | null;
+  runtimeDownloadDir: string;
   modelReady: boolean;
   missing: string[];
   downloading: boolean;
@@ -256,6 +262,8 @@ export const api = {
   bubbleClose: () => invoke<void>("bubble_close"),
   bubbleResize: (width: number, height: number) => invoke<void>("bubble_resize", { width, height }),
   statusResize: (width: number, height: number) => invoke<void>("status_resize", { width, height }),
+  autostartGet: () => invoke<boolean>("autostart_get"),
+  autostartSet: (enabled: boolean) => invoke<void>("autostart_set", { enabled }),
   openChat: () => invoke<void>("open_chat"),
   voiceStatus: () => invoke<VoiceStatus>("voice_status"),
   agentsOverview: () => invoke<AgentsOverview>("agents_overview"),

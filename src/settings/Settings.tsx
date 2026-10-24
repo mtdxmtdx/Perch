@@ -61,7 +61,7 @@ const STYLES: [string, string][] = [
   ["deepseek", "DeepSeek 格式（thinking + reasoning_effort）"],
 ];
 
-type Tab = "models" | "personas" | "tools" | "voice" | "agents" | "memory" | "params";
+type Tab = "models" | "personas" | "tools" | "voice" | "agents" | "memory" | "params" | "general";
 
 export function Settings() {
   const [tab, setTab] = useState<Tab>("models");
@@ -132,6 +132,7 @@ export function Settings() {
             ["agents", "Agent 接入"],
             ["memory", "记忆"],
             ["params", "对话参数"],
+            ["general", "常规"],
           ] as [Tab, string][]
         ).map(([t, label]) => (
           <button key={t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
@@ -147,6 +148,7 @@ export function Settings() {
         {tab === "agents" && <AgentsTab draft={draft} update={update} />}
         {tab === "memory" && <MemoryTab />}
         {tab === "params" && <ParamsTab draft={draft} update={update} />}
+        {tab === "general" && <GeneralTab />}
       </main>
       {tab !== "memory" && (
         <footer>
@@ -528,23 +530,44 @@ function VoiceTab({ draft, update }: TabProps) {
     const d = await openDialog({ directory: true, title: "选择 SenseVoice 模型文件夹（里面有 model.int8.onnx 和 tokens.txt）" });
     if (typeof d === "string") setVoice({ model_dir: d });
   };
+  const pickRuntimeDir = async () => {
+    const d = await openDialog({ directory: true, title: "选择语音运行库文件夹（里面有 sherpa-onnx-c-api.dll 和 onnxruntime.dll）" });
+    if (typeof d === "string") setVoice({ runtime_dir: d });
+  };
+  const ready = !!status && status.runtimeReady && status.modelReady;
+  const needSize = status ? [!status.runtimeReady && "运行库约 7.5MB", !status.modelReady && "模型约 240MB"].filter(Boolean).join(" + ") : "";
+  const restartNeeded = !!status?.runtimeLoadedFrom && !!status.runtimeDir && status.runtimeLoadedFrom !== status.runtimeDir;
 
   return (
     <div className="tab">
       <section>
-        <h3>识别模型（本地运行，不联网）</h3>
+        <h3>语音输入</h3>
+        <div className="checks">
+          <label>
+            <input type="checkbox" checked={v.enabled} onChange={(e) => setVoice({ enabled: e.target.checked })} /> 开启语音输入（本地识别，录音不上传）
+          </label>
+        </div>
         <p className="muted small">
-          使用 SenseVoice（中、英、日、韩、粤语）离线识别，配合 Silero VAD 去掉静音。模型约 240MB，只需下载一次，优先从国内镜像下载，支持断点续传。
+          可选功能，默认关闭。用 SenseVoice（中、英、日、韩、粤语）离线识别，配合 Silero VAD 去掉静音。需要语音运行库（sherpa-onnx，约 7.5MB）和识别模型（约
+          240MB）：可以一键下载（只需一次，支持断点续传），也可以在下面指定已有的文件夹。关着时不加载这些组件，也不占用快捷键。
         </p>
+        {v.enabled && status && !ready && <div className="warn">已开启，但还缺{!status.runtimeReady ? "语音运行库" : ""}{!status.runtimeReady && !status.modelReady ? "和" : ""}{!status.modelReady ? "识别模型" : ""}，下载或指定之后才能用。</div>}
+      </section>
+
+      <section>
+        <h3>语音组件</h3>
         {status && (
           <div className="card">
-            {status.modelReady ? (
-              <div className="ok">✓ 模型已就绪</div>
+            {status.runtimeReady ? (
+              <div className="ok">✓ 运行库已就绪 <span className="muted small">{status.runtimeDir}</span></div>
             ) : (
-              <>
-                <div className="warn">还没有模型，下载后才能用语音输入。</div>
-                <div className="muted small">保存位置：{status.downloadDir}</div>
-              </>
+              <div className="warn">还没有语音运行库 <span className="muted small">（下载到 {status.runtimeDownloadDir}）</span></div>
+            )}
+            {restartNeeded && <div className="muted small">本次运行已从 {status.runtimeLoadedFrom} 加载运行库，换的文件夹重启后生效。</div>}
+            {status.modelReady ? (
+              <div className="ok">✓ 识别模型已就绪</div>
+            ) : (
+              <div className="warn">还没有识别模型 <span className="muted small">（下载到 {status.downloadDir}）</span></div>
             )}
             {progress && (
               <div className="dl-progress">
@@ -561,9 +584,9 @@ function VoiceTab({ draft, update }: TabProps) {
               {status.downloading || progress ? (
                 <button onClick={() => void api.voiceDownloadCancel()}>取消下载</button>
               ) : (
-                !status.modelReady && (
+                !ready && (
                   <button className="primary" onClick={() => void download()}>
-                    下载模型（约 240MB）
+                    下载语音组件（{needSize}）
                   </button>
                 )
               )}
@@ -571,6 +594,17 @@ function VoiceTab({ draft, update }: TabProps) {
           </div>
         )}
         <div className="grid2 params" style={{ marginTop: 10 }}>
+          <label>
+            自己的运行库文件夹（可选）
+            <div className="small muted">里面要有 sherpa-onnx v2.0.0 的 sherpa-onnx-c-api.dll 和 onnxruntime.dll；留空用下载的</div>
+          </label>
+          <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto auto" }}>
+            <input value={v.runtime_dir ?? ""} placeholder="（使用下载的运行库）" onChange={(e) => setVoice({ runtime_dir: e.target.value || null })} />
+            <button onClick={() => void pickRuntimeDir()}>选择…</button>
+            <button onClick={() => setVoice({ runtime_dir: null })} disabled={!v.runtime_dir}>
+              清除
+            </button>
+          </div>
           <label>
             自己的模型文件夹（可选）
             <div className="small muted">已经有 SenseVoice 模型时可以直接指定，留空用自动下载的</div>
@@ -817,6 +851,41 @@ function MemoryEditor({ edit, setEdit, save }: { edit: { id: number | null; kind
         保存
       </button>
       <button onClick={() => setEdit(null)}>取消</button>
+    </div>
+  );
+}
+
+/** 常规：开机自启动（直接写注册表，立即生效，不用点保存） */
+function GeneralTab() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => void api.autostartGet().then(setOn), []);
+
+  const toggle = async (v: boolean) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.autostartSet(v);
+    } catch (e) {
+      setErr(errorText(e));
+    }
+    setOn(await api.autostartGet());
+    setBusy(false);
+  };
+
+  return (
+    <div className="tab">
+      <section>
+        <h3>启动</h3>
+        <div className="checks">
+          <label>
+            <input type="checkbox" checked={!!on} disabled={on === null || busy} onChange={(e) => void toggle(e.target.checked)} /> 开机时自动启动 Perch
+          </label>
+        </div>
+        <p className="muted small">默认关闭。只对当前 Windows 用户生效，改了立即生效；也可以在任务管理器的「启动应用」里管理。</p>
+        {err && <div className="error">{err}</div>}
+      </section>
     </div>
   );
 }

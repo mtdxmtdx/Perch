@@ -3241,6 +3241,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "bzip2 0.6.1",
  "chrono",
  "cpal",
  "dirs 6.0.0",
@@ -3257,6 +3258,7 @@ dependencies = [
  "serde_json",
  "sherpa-onnx",
  "similar",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
