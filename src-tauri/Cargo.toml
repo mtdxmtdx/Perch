@@ -1,0 +1,60 @@
+[package]
+name = "perch"
+version = "0.1.0"
+edition = "2021"
+description = "Windows 桌宠：会聊天、能看文件、帮你盯着编程 agent 干活"
+license = "GPL-3.0-only"
+repository = "https://github.com/mtdxmtdx/Perch"
+
+[lib]
+name = "perch_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+dirs = "6"
+fastrand = "2"
+log = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+futures-util = "0.3"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+keyring = { version = "3", features = ["windows-native"] }
+base64 = "0.23.1"
+uuid = { version = "1.29.0", features = ["v4"] }
+quick-xml = "0.42.0"
+tauri-plugin-dialog = "2"
+pdf-extract = "0.12.1"
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+similar = "3.2.0"
+encoding_rs = "0.8.42"
+sherpa-onnx = { version = "2", default-features = false, features = ["shared"] }
+cpal = "0.18"
+tauri-plugin-global-shortcut = "2"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tauri-plugin-notification = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

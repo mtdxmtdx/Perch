@@ -1,0 +1,15 @@
+.sessions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.sessions li {
+  display: grid; grid-template-columns: 10px auto 1fr auto auto; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 8px; background: var(--panel-2);
+}
+.sessions .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.sessions .working .dot, .sessions .thinking .dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.sessions .attention .dot { background: #e0b020; animation: pulse 0.8s ease-in-out infinite; }
+.sessions .error .dot { background: var(--danger); }
+.sessions .done .dot { background: var(--ok); }
+.sessions .who { font-weight: 600; }
+.sessions .proj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessions .attention .st { color: #c8901a; }
+.sessions .error .st { color: var(--danger); }
+@keyframes pulse { 50% { opacity: 0.35; } }

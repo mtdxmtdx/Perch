@@ -1,0 +1,13 @@
+.tool-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; }
+.tool-lines li { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; color: var(--muted); min-width: 0; }
+.tool-lines .icon { width: 1.1em; text-align: center; flex-shrink: 0; }
+.tool-lines .title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+.tool-lines .detail { opacity: 0.85; min-width: 0; overflow-wrap: anywhere; }
+/* 错误信息往往很长（带完整路径），单独换一行显示 */
+.tool-lines li.error .detail { flex-basis: 100%; padding-left: calc(1.1em + 6px); }
+.tool-lines li.ok .icon { color: var(--ok); }
+.tool-lines li.error .icon, .tool-lines li.error .detail { color: var(--danger); }
+.tool-lines li.denied { text-decoration: line-through; }
+.tool-lines li.running .icon { animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.3; } }
+.tool-lines.compact { font-size: 12px; }

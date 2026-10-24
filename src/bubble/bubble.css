@@ -1,0 +1,102 @@
+html, body { background: transparent; }
+
+.bubble-wrap {
+  position: relative;
+  width: 320px;
+  padding: 8px 8px 0;
+}
+.bubble-wrap.above { padding-bottom: 14px; }
+.bubble-wrap.side { padding-bottom: 8px; }
+
+.bubble {
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-line);
+  border-radius: 14px;
+  box-shadow: 0 2px 10px rgba(60, 40, 20, 0.18);
+  padding: 8px 10px 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bubble.dragging { border-color: var(--accent); border-style: dashed; }
+
+.bubble-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin: -2px -4px -4px 0; }
+
+.bubble-reply {
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  line-height: 1.55;
+  word-break: break-word;
+}
+.bubble-reply.streaming::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+button.link { border: none; background: none; padding: 0 0 0 6px; color: var(--accent); font-size: 12.5px; }
+
+.bubble-input { display: flex; align-items: flex-end; gap: 2px; }
+.bubble-input textarea {
+  flex: 1;
+  resize: none;
+  max-height: 96px;
+  field-sizing: content;
+  min-height: 32px;
+  line-height: 1.4;
+}
+
+.bubble-tail {
+  position: absolute;
+  bottom: 5px;
+  width: 0;
+  height: 0;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-top: 10px solid var(--bubble-line);
+}
+.bubble-tail::after {
+  content: "";
+  position: absolute;
+  left: -9px;
+  top: -11px;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-top: 9px solid var(--bubble-bg);
+}
+
+.mini-thumbs { display: flex; gap: 6px; flex-wrap: wrap; }
+.mini-thumb { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid var(--bubble-line); cursor: pointer; }
+
+/* 气泡里的修改确认 */
+.approval-inline .approval { box-shadow: none; border-color: var(--accent); }
+.approval-inline .approval header { padding: 8px 10px 2px; }
+.approval-inline .approval .path { padding: 0 10px 6px; }
+.approval-inline .diff { max-height: 180px; font-size: 11.5px; }
+.approval-inline .diff > div { padding: 0 8px; }
+.approval-inline .approval footer { padding: 8px 10px; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.approval-inline .approval footer .muted { flex-basis: 100%; margin-right: 0; }
+.approval-inline .approval footer button { padding: 4px 9px; }
+
+/* 语音 */
+.voice-status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.voice-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); animation: pulse 1s ease-in-out infinite; }
+.voice-status .meter { flex: 1; height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.voice-status .meter span { display: block; height: 100%; background: var(--accent); transition: width 60ms linear; }
+.voice-heard { font-size: 12.5px; }
+button.mic.on { background: var(--accent-soft); border-color: var(--accent); }
+@keyframes pulse { 50% { opacity: 0.3; } }
+
+/* 桌宠主动说的话 */
+.bubble-said { display: flex; align-items: flex-start; gap: 4px; line-height: 1.55; cursor: default; }
+.bubble-said span { flex: 1; white-space: pre-wrap; word-break: break-word; }
+.bubble-said button { padding: 0 4px; margin-top: 1px; }
+
+/* 首次启动的接入询问 */
+.agent-offer { border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.agent-offer .offer-title { font-weight: 600; }
+.agent-offer ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.agent-offer li label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.agent-offer li.disabled label { cursor: default; opacity: 0.6; }
+.agent-offer .hint { font-size: 11.5px; color: var(--muted); padding-left: 22px; }
+.agent-offer .offer-note { font-size: 11.5px; color: var(--muted); }
+.agent-offer .offer-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.agent-offer .offer-actions button { padding: 4px 10px; }

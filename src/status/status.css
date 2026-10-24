@@ -1,0 +1,131 @@
+/* Agent 状态标签：深色半透明胶囊，彩色圆点表示状态。不跟随系统深浅色，桌面背景什么颜色都看得清。 */
+
+.tags {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  /* 给阴影留位置 */
+  padding: 4px 6px 6px;
+  user-select: none;
+  pointer-events: none;
+}
+.tags.left {
+  align-items: flex-end;
+}
+
+.tag {
+  --c: #7aa7ff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 10px 0 8px;
+  border-radius: 11px;
+  background: rgba(24, 24, 30, 0.86);
+  color: #f3f3f6;
+  font: 500 12px/1 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  animation: tag-in 0.18s ease-out;
+}
+
+.tag .dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c);
+  box-shadow: 0 0 6px var(--c);
+}
+.tag .who {
+  font-weight: 600;
+}
+.tag .proj,
+.tag .time {
+  color: rgba(255, 255, 255, 0.55);
+}
+.tag .proj {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tag .time {
+  font-variant-numeric: tabular-nums;
+}
+
+.tag.thinking {
+  --c: #7aa7ff;
+}
+.tag.thinking .dot {
+  animation: breathe 1.4s ease-in-out infinite;
+}
+.tag.working {
+  --c: #3ecf8e;
+}
+.tag.working .dot {
+  animation: breathe 0.9s ease-in-out infinite;
+}
+.tag.attention {
+  --c: #ffb020;
+  background: rgba(58, 38, 6, 0.92);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 176, 32, 0.6);
+}
+.tag.attention .dot {
+  animation: blink 1s steps(2, jump-none) infinite;
+}
+.tag.done {
+  --c: #3ecf8e;
+}
+.tag.error {
+  --c: #ff5d5d;
+  background: rgba(60, 14, 14, 0.92);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 93, 93, 0.55);
+}
+
+.more {
+  height: 18px;
+  padding: 0 8px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  background: rgba(24, 24, 30, 0.75);
+  color: rgba(255, 255, 255, 0.7);
+  font: 11px/1 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.55);
+    opacity: 0.45;
+  }
+}
+@keyframes blink {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.25;
+  }
+}
+@keyframes tag-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tag,
+  .tag .dot {
+    animation: none !important;
+  }
+}

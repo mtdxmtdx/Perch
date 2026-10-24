@@ -1,0 +1,19 @@
+# 依赖和构建产物
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# 本地开发笔记（不公开）
+PLAN.md
+
+# 图标原图（处理后的版本在 src-tauri/icons/source.png）
+/小鸟栖息代码窗口之上.png
+
+# 编辑器、系统和日志
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db
+*.local

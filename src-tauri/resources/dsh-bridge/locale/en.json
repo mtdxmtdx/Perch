@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Perch",
+    "description": "Forwards session status (start, tool calls, approvals, completion, errors) to the Perch desktop companion."
+  }
+}

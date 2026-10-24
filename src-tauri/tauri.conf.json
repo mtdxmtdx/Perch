@@ -1,0 +1,101 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Perch",
+  "version": "0.1.0",
+  "identifier": "com.perch.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "pet",
+        "title": "Perch",
+        "url": "index.html",
+        "width": 144,
+        "height": 156,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": false,
+        "focusable": false,
+        "visible": false
+      },
+      {
+        "label": "bubble",
+        "title": "Perch 气泡",
+        "url": "index.html",
+        "width": 320,
+        "height": 80,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "focus": false
+      },
+      {
+        "label": "status",
+        "title": "Perch 状态",
+        "url": "index.html",
+        "width": 220,
+        "height": 32,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": false,
+        "focusable": false,
+        "visible": false
+      },
+      {
+        "label": "chat",
+        "title": "Perch · 聊天",
+        "url": "index.html",
+        "width": 460,
+        "height": 700,
+        "minWidth": 360,
+        "minHeight": 420,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "settings",
+        "title": "Perch · 设置",
+        "url": "index.html",
+        "width": 860,
+        "height": 680,
+        "minWidth": 640,
+        "minHeight": 480,
+        "visible": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ]
+  }
+}

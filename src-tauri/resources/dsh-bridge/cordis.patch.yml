@@ -1,0 +1,6 @@
+# Perch 桌宠的 DSH 组合包：把本包的 Host 插件插入组合。
+# 端口和令牌在同目录的 config.json 里，由桌宠写入。
+- insert:
+    - id: perch-dsh-bridge
+      name: perch-dsh-bridge
+      config: {}
