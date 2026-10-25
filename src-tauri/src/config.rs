@@ -22,6 +22,10 @@ pub struct Config {
     pub image: ImageParams,
     pub voice: VoiceParams,
     pub agents: AgentsParams,
+    /// 【留接口】TTS 语音输出（见 tts.rs）
+    pub tts: TtsParams,
+    /// 【留接口】主动聊天、提醒（见 proactive.rs）
+    pub proactive: ProactiveParams,
 }
 
 /// 接入 Claude Code / Codex / DeepSeek Harness，汇报它们的工作状态
@@ -49,6 +53,55 @@ impl Default for AgentsParams {
     fn default() -> Self {
         Self { port: 47821, claude_code: false, codex: false, dsh: false, summarize: true, notify: true, min_report_seconds: 20, status_tag: true, onboarded: false }
     }
+}
+
+/// 【留接口】TTS 语音输出。还没有引擎和设置界面，默认关闭
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TtsParams {
+    pub enabled: bool,
+    /// 引擎名（见 tts::make_provider）；"none" 表示不读
+    pub provider: String,
+    /// 音色；为空用引擎默认的
+    pub voice: Option<String>,
+    /// 读对话回复
+    pub read_replies: bool,
+    /// 读 agent 汇报和主动聊天说的话
+    pub read_reports: bool,
+}
+
+impl Default for TtsParams {
+    fn default() -> Self {
+        Self { enabled: false, provider: "none".into(), voice: None, read_replies: true, read_reports: true }
+    }
+}
+
+/// 【留接口】主动聊天、提醒。还没有设置界面，默认关闭；compose 还没实现，打开了也只记日志
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProactiveParams {
+    pub enabled: bool,
+    /// 两次主动开口至少隔多少分钟
+    pub min_interval_minutes: u64,
+    /// 用户在电脑前、但这么多分钟没聊天时找你聊两句；为空不启用
+    pub no_chat_minutes: Option<u64>,
+    /// 每天定时提醒
+    pub daily: Vec<DailyReminder>,
+    /// agent 等授权、出错后，等可以打扰时再提一次
+    pub agent_follow_up: bool,
+}
+
+impl Default for ProactiveParams {
+    fn default() -> Self {
+        Self { enabled: false, min_interval_minutes: 60, no_chat_minutes: Some(120), daily: Vec::new(), agent_follow_up: false }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DailyReminder {
+    /// "HH:MM"，24 小时制
+    pub at: String,
+    pub label: String,
 }
 
 /// 语音输入
@@ -249,6 +302,8 @@ impl Default for Config {
             tools: ToolParams::default(),
             image: ImageParams::default(),
             voice: VoiceParams::default(),
+            tts: TtsParams::default(),
+            proactive: ProactiveParams::default(),
             agents: AgentsParams::default(),
         }
     }

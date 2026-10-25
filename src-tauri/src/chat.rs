@@ -443,7 +443,14 @@ fn tool_note(allowed: &[PathBuf], with_image: bool) -> String {
     s
 }
 
+/// 正在回复中（主动聊天据此判断能不能打扰）
+pub fn is_busy(app: &AppHandle) -> bool {
+    app.state::<AppState>().chat.busy.load(Ordering::SeqCst)
+}
+
 pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) -> Result<(), String> {
+    // 用户说新的话了：打断正在读的
+    crate::tts::stop();
     let state = app.state::<AppState>();
     if state.chat.busy.swap(true, Ordering::SeqCst) {
         return Err("上一条还没回完，稍等一下".into());
@@ -628,6 +635,7 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
             eprintln!("[chat] 保存思考过程失败: {e}");
         }
     }
+    crate::speak::reply_finished(&app, &final_text);
     emit(&app, ChatEvent::Done { persona: persona.id.clone(), message: msg });
     set_speech(&app, Some("talk"), Some(Instant::now() + TALK_LINGER));
     spawn_maintenance(app.clone(), persona);
