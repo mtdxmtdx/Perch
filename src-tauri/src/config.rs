@@ -24,7 +24,7 @@ pub struct Config {
     pub agents: AgentsParams,
     /// 【留接口】TTS 语音输出（见 tts.rs）
     pub tts: TtsParams,
-    /// 【留接口】主动聊天、提醒（见 proactive.rs）
+    /// 主动聊天、提醒（见 proactive.rs）
     pub proactive: ProactiveParams,
 }
 
@@ -76,24 +76,44 @@ impl Default for TtsParams {
     }
 }
 
-/// 【留接口】主动聊天、提醒。还没有设置界面，默认关闭；compose 还没实现，打开了也只记日志
+/// 主动聊天、提醒（见 proactive.rs），默认关闭
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProactiveParams {
     pub enabled: bool,
-    /// 两次主动开口至少隔多少分钟
+    /// 用辅助模型按人格口吻写要说的话；关掉只用模板话术（不发给云端）
+    pub use_model: bool,
+    /// 免打扰时段 "HH:MM"，可以跨午夜；期间只说重要的提醒。两个都为空表示不设
+    pub quiet_start: Option<String>,
+    pub quiet_end: Option<String>,
+    /// 两次主动闲聊至少隔多少分钟（重要的提醒不受限制）
     pub min_interval_minutes: u64,
     /// 用户在电脑前、但这么多分钟没聊天时找你聊两句；为空不启用
     pub no_chat_minutes: Option<u64>,
+    /// 连续用电脑这么多分钟没休息时提醒活动；为空不启用
+    pub sedentary_minutes: Option<u64>,
+    /// 就寝时间 "HH:MM"：到点后还在用电脑就催睡；为空不启用
+    pub bedtime: Option<String>,
     /// 每天定时提醒
     pub daily: Vec<DailyReminder>,
-    /// agent 等授权、出错后，等可以打扰时再提一次
+    /// agent 等你授权超过 5 分钟还没处理时，再提一次
     pub agent_follow_up: bool,
 }
 
 impl Default for ProactiveParams {
     fn default() -> Self {
-        Self { enabled: false, min_interval_minutes: 60, no_chat_minutes: Some(120), daily: Vec::new(), agent_follow_up: false }
+        Self {
+            enabled: false,
+            use_model: true,
+            quiet_start: Some("23:30".into()),
+            quiet_end: Some("07:30".into()),
+            min_interval_minutes: 60,
+            no_chat_minutes: Some(120),
+            sedentary_minutes: Some(60),
+            bedtime: None,
+            daily: Vec::new(),
+            agent_follow_up: true,
+        }
     }
 }
 

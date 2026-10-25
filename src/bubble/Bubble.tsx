@@ -100,9 +100,10 @@ export function Bubble() {
     return () => ro.disconnect();
   }, []);
 
+  // 桌宠主动说的话也会记进对话，但它已经显示在上面的"说的话"里了，不要再当回复显示一遍
   const lastReply = useMemo(
-    () => [...chat.messages].reverse().find((m) => m.role === "assistant" && m.createdAt >= sessionFrom) ?? null,
-    [chat.messages, sessionFrom],
+    () => [...chat.messages].reverse().find((m) => m.role === "assistant" && m.createdAt >= sessionFrom && m.display !== said) ?? null,
+    [chat.messages, sessionFrom, said],
   );
   const reply = chat.streaming !== null ? chat.streaming || (chat.tools.length ? null : "…") : lastReply?.display ?? null;
   const images = chat.streaming === null ? (lastReply?.attachments ?? []).filter((a) => a.kind === "image" && a.file) : [];

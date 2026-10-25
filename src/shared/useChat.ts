@@ -57,6 +57,10 @@ export function useChat(pageSize = 50) {
           case "delta":
             setStreaming((s) => (s ?? "") + ev.text);
             break;
+          case "added":
+            // 桌宠主动说的话
+            setMessages((m) => [...m, ev.message]);
+            break;
           case "done":
             setMessages((m) => [...m, ev.message]);
             setStreaming(null);

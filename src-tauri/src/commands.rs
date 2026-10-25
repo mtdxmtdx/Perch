@@ -1,6 +1,6 @@
 //! M2 的前端命令：设置、对话、记忆、窗口。
 
-use crate::config::{self, AgentsParams, ChatParams, ImageParams, Persona, Provider, Roles, ToolParams, VoiceParams};
+use crate::config::{self, AgentsParams, ChatParams, ImageParams, Persona, ProactiveParams, Provider, Roles, ToolParams, VoiceParams};
 use crate::files::{self, AttachmentIn};
 use crate::llm::{self, Endpoint};
 use crate::store::{Memory, Message};
@@ -32,6 +32,7 @@ pub struct SettingsView {
     pub image: ImageParams,
     pub voice: VoiceParams,
     pub agents: AgentsParams,
+    pub proactive: ProactiveParams,
     pub skins: Vec<skin::SkinEntry>,
     /// 生成的图片另存到哪
     pub pictures_dir: String,
@@ -49,6 +50,7 @@ pub struct SettingsIn {
     pub image: ImageParams,
     pub voice: VoiceParams,
     pub agents: AgentsParams,
+    pub proactive: ProactiveParams,
 }
 
 #[tauri::command]
@@ -72,6 +74,7 @@ pub fn settings_get(state: State<AppState>) -> SettingsView {
         image: cfg.image,
         voice: cfg.voice,
         agents: cfg.agents,
+        proactive: cfg.proactive,
         skins: skin::list(),
         pictures_dir: crate::tools::display(&crate::imagegen::pictures_dir()),
     }
@@ -134,6 +137,7 @@ pub fn settings_save(app: AppHandle, state: State<AppState>, settings: SettingsI
         cfg.tools = settings.tools;
         cfg.image = settings.image;
         cfg.voice = settings.voice;
+        cfg.proactive = settings.proactive;
         // 各接入的开关由"Agent 接入"页单独控制（要改外部配置），这里只保存其余参数
         let (cc, cx, ds, onboarded) = (cfg.agents.claude_code, cfg.agents.codex, cfg.agents.dsh, cfg.agents.onboarded);
         cfg.agents = AgentsParams { claude_code: cc, codex: cx, dsh: ds, onboarded, ..settings.agents };

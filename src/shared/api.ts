@@ -111,6 +111,25 @@ export interface AgentsParams {
   status_tag: boolean;
 }
 
+export interface DailyReminder {
+  /** "HH:MM" */
+  at: string;
+  label: string;
+}
+
+export interface ProactiveParams {
+  enabled: boolean;
+  use_model: boolean;
+  quiet_start: string | null;
+  quiet_end: string | null;
+  min_interval_minutes: number;
+  no_chat_minutes: number | null;
+  sedentary_minutes: number | null;
+  bedtime: string | null;
+  daily: DailyReminder[];
+  agent_follow_up: boolean;
+}
+
 export type AgentId = "claude-code" | "codex" | "dsh";
 
 /** 首次启动的接入询问里的一项 */
@@ -171,6 +190,7 @@ export interface SettingsView {
   image: ImageParams;
   voice: VoiceParams;
   agents: AgentsParams;
+  proactive: ProactiveParams;
   skins: SkinEntry[];
   picturesDir: string;
 }
@@ -210,6 +230,7 @@ export type ChatEvent =
   | { type: "start"; persona: string }
   | { type: "delta"; persona: string; text: string }
   | { type: "done"; persona: string; message: Message }
+  | { type: "added"; persona: string; message: Message }
   | { type: "error"; persona: string; error: string }
   | { type: "tool"; persona: string; id: string; title: string; status: ToolStatus; detail: string | null };
 
@@ -244,6 +265,7 @@ export const api = {
     image: ImageParams;
     voice: VoiceParams;
     agents: AgentsParams;
+    proactive: ProactiveParams;
   }) => invoke<void>("settings_save", { settings }),
   providerSetKey: (id: string, key: string) => invoke<void>("provider_set_key", { id, key }),
   providerTest: (provider: Provider, key?: string, imageOnly?: boolean) => invoke<string>("provider_test", { provider, key, imageOnly }),
