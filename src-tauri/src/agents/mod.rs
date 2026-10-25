@@ -16,7 +16,6 @@ use serde_json::Value;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 #[derive(Default)]
 pub struct AgentRuntime {
@@ -181,6 +180,13 @@ async fn persona_summary(app: &AppHandle, agent: Agent, project: &str, final_mes
 
 async fn report_out(app: &AppHandle, agent: Agent, cwd: &str, r: Report, p: &AgentsParams) {
     let project = model::project_name(cwd);
+    // 【留接口】告诉主动聊天的触发器（关着时什么都不做）
+    let kind = match &r {
+        Report::NeedPermission { .. } => crate::proactive::AgentSignalKind::NeedPermission,
+        Report::Failed { .. } => crate::proactive::AgentSignalKind::Failed,
+        Report::Done { .. } => crate::proactive::AgentSignalKind::Done,
+    };
+    crate::proactive::agent_signal(app, crate::proactive::AgentSignal { agent: agent.display(), kind, project: project.clone() });
     let where_ = if project.is_empty() { String::new() } else { format!("「{project}」的 ") };
     let (title, text) = match r {
         Report::NeedPermission { tool } => {
@@ -205,18 +211,12 @@ async fn report_out(app: &AppHandle, agent: Agent, cwd: &str, r: Report, p: &Age
             (format!("{} 完成了", agent.display()), text)
         }
     };
-    say(app, &title, &text, p.notify);
+    crate::speak::say(app, &title, &text, crate::speak::Source::Agent, p.notify);
 }
 
-/// 汇报：桌宠看得见时用气泡说；同时（按设置）发系统通知。全屏隐藏期间只发通知
+/// 程序自己的提示（需要修复、改名迁移等）
 pub fn say(app: &AppHandle, title: &str, text: &str, notify: bool) {
-    let hidden = app.state::<AppState>().shared.lock().unwrap().pet_hidden;
-    if notify || hidden {
-        let _ = app.notification().builder().title(title).body(text).show();
-    }
-    if !hidden {
-        windows::say(app, text);
-    }
+    crate::speak::say(app, title, text, crate::speak::Source::System, notify);
 }
 
 // ---------- 设置页 ----------

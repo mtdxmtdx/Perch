@@ -305,6 +305,14 @@ impl Store {
             .flatten()
     }
 
+    /// 用户最近一次发消息的时间（任意人格），秒级时间戳
+    pub fn last_user_message_at(&self) -> Option<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT MAX(created_at) FROM messages WHERE role = 'user'", [], |r| r.get::<_, Option<i64>>(0))
+            .ok()
+            .flatten()
+    }
+
     pub fn delete_state(&self, key: &str) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute("DELETE FROM state WHERE key = ?1", params![key]);

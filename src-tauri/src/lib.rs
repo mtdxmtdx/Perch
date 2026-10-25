@@ -8,10 +8,13 @@ mod imagegen;
 mod llm;
 mod memory;
 mod pet;
+mod proactive;
 mod skin;
+mod speak;
 mod store;
 mod tools;
 mod tray;
+mod tts;
 mod voice;
 mod windows;
 
@@ -204,6 +207,7 @@ pub fn run() {
             }
             pet::controller::spawn(app.handle().clone(), shared_for_setup);
             agents::start(app.handle());
+            proactive::start(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())

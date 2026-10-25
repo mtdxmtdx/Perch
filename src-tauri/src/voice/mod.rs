@@ -95,6 +95,8 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     }
     // 调用任何 sherpa 接口之前先把运行库加载进来
     runtime::ensure_loaded(runtime_dir.as_deref())?;
+    // 开始说话了：打断正在读的
+    crate::tts::stop();
     model_paths(app)?;
     let device = state.config.lock().unwrap().voice.device.clone();
     let app2 = app.clone();
@@ -127,6 +129,11 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         preview_loop(&app3, take, asr).await;
     });
     Ok(())
+}
+
+/// 正在录音（主动聊天据此判断能不能打扰）
+pub fn is_recording(app: &AppHandle) -> bool {
+    app.state::<AppState>().voice.recorder.lock().unwrap().is_some()
 }
 
 fn still_recording(app: &AppHandle, take: u64) -> bool {
