@@ -778,7 +778,7 @@ mod tests {
         let ctx = build_context(&p, Some("## 记忆\n- x".into()), Some("聊过天气".into()), &hist, false, "T", "");
         let v = serde_json::to_value(&ctx).unwrap();
         let sys = v[0]["content"].as_str().unwrap();
-        assert!(sys.starts_with("你是住在"));
+        assert!(sys.starts_with("你是栖栖"));
         assert!(sys.find("## 记忆").unwrap() < sys.find("聊过天气").unwrap());
         assert_eq!(v[1]["content"], "你是谁");
         assert_eq!(v[2]["content"], "我是小桌宠");

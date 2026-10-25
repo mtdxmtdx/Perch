@@ -1,0 +1,7 @@
+{
+  "id": "perch-bird",
+  "displayName": "栖栖",
+  "description": "Perch 的默认形象：一只停在窗沿上的蓝白小鸟。",
+  "spritesheetPath": "spritesheet.png",
+  "spriteVersionNumber": 2
+}

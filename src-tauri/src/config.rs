@@ -5,8 +5,10 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// 当前皮肤目录的绝对路径；为空时自动选择
+    /// 当前皮肤：皮肤目录的绝对路径，或内置皮肤的 id；为空时用内置的栖栖
     pub skin: Option<String>,
+    /// 已做过"内置栖栖"上线时的迁移（老用户保留原来看到的皮肤）
+    pub builtin_skin_migrated: bool,
     /// 相对一格精灵（Codex 为 192×208）的缩放比例
     pub scale: f64,
     pub work_mode: bool,
@@ -190,7 +192,7 @@ impl Default for Persona {
     fn default() -> Self {
         Self {
             id: "default".into(),
-            name: "小桌宠".into(),
+            name: "栖栖".into(),
             system_prompt: DEFAULT_PROMPT.into(),
             begin_dialogs: Vec::new(),
             provider: None,
@@ -200,7 +202,8 @@ impl Default for Persona {
     }
 }
 
-const DEFAULT_PROMPT: &str = "你是住在用户电脑桌面上的小桌宠，性格活泼、贴心，说话简短自然，像朋友聊天一样。\
+const DEFAULT_PROMPT: &str = "你是栖栖，一只停在用户电脑屏幕窗沿上的蓝白小鸟，也是用户的桌面伙伴。\
+性格活泼、贴心，说话简短自然，像朋友聊天一样；偶尔流露一点小鸟的习惯（比如歪头、扑腾翅膀），但不要每句都提。\
 回答尽量控制在三四句话以内，除非用户需要详细解释。不要使用夸张的颜文字堆砌。";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -234,6 +237,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             skin: None,
+            builtin_skin_migrated: false,
             scale: 0.75,
             work_mode: false,
             hide_on_fullscreen: true,
@@ -393,6 +397,16 @@ pub fn load() -> Config {
     if raw.as_ref().is_some_and(|v| v.pointer("/voice/enabled").is_none()) {
         cfg.voice.enabled = crate::voice::models::locate(cfg.voice.model_dir.as_deref()).is_ok()
             && crate::voice::runtime::locate(cfg.voice.runtime_dir.as_deref()).is_some();
+    }
+    // 内置栖栖上线前，没选过皮肤的用户看到的是自动挑的（uika 或第一个）：把它写进配置，升级后形象不变。新装的直接用栖栖
+    if !cfg.builtin_skin_migrated {
+        if raw.is_some() && cfg.skin.is_none() {
+            cfg.skin = crate::skin::legacy_default().map(|e| e.id);
+        }
+        cfg.builtin_skin_migrated = true;
+        if raw.is_some() {
+            save(&cfg);
+        }
     }
     cfg.normalize();
     cfg
