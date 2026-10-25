@@ -1,6 +1,6 @@
 [package]
 name = "perch"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Windows 桌宠：会聊天、能看文件、帮你盯着编程 agent 干活"
 license = "PolyForm-Noncommercial-1.0.0"
