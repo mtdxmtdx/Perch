@@ -16,6 +16,7 @@ import {
   type VoiceStatus,
   type DownloadProgress,
   type AgentsParams,
+  type ProactiveParams,
   type AgentsOverview,
   type AgentId,
 } from "../shared/api";
@@ -32,6 +33,7 @@ interface Draft {
   image: ImageParams;
   voice: VoiceParams;
   agents: AgentsParams;
+  proactive: ProactiveParams;
 }
 
 const newId = () => crypto.randomUUID().slice(0, 8);
@@ -61,7 +63,7 @@ const STYLES: [string, string][] = [
   ["deepseek", "DeepSeek 格式（thinking + reasoning_effort）"],
 ];
 
-type Tab = "models" | "personas" | "tools" | "voice" | "agents" | "memory" | "params" | "general";
+type Tab = "models" | "personas" | "tools" | "voice" | "agents" | "companion" | "memory" | "params" | "general";
 
 export function Settings() {
   const [tab, setTab] = useState<Tab>("models");
@@ -81,7 +83,7 @@ export function Settings() {
 
   const load = async () => {
     const s = await api.settingsGet();
-    setDraft({ providers: s.providers.map(({ hasKey: _, reasoningIgnored: __, ...p }) => p), roles: s.roles, personas: s.personas, activePersona: s.activePersona, chat: s.chat, tools: s.tools, image: s.image, voice: s.voice, agents: s.agents });
+    setDraft({ providers: s.providers.map(({ hasKey: _, reasoningIgnored: __, ...p }) => p), roles: s.roles, personas: s.personas, activePersona: s.activePersona, chat: s.chat, tools: s.tools, image: s.image, voice: s.voice, agents: s.agents, proactive: s.proactive });
     setPicturesDir(s.picturesDir);
     setHasKey(Object.fromEntries(s.providers.map((p) => [p.id, p.hasKey])));
     setReasoningIgnored(Object.fromEntries(s.providers.map((p) => [p.id, p.reasoningIgnored])));
@@ -130,6 +132,7 @@ export function Settings() {
             ["tools", "工具与生图"],
             ["voice", "语音"],
             ["agents", "Agent 接入"],
+            ["companion", "陪伴"],
             ["memory", "记忆"],
             ["params", "对话参数"],
             ["general", "常规"],
@@ -148,6 +151,7 @@ export function Settings() {
         {tab === "agents" && <AgentsTab draft={draft} update={update} />}
         {tab === "memory" && <MemoryTab />}
         {tab === "params" && <ParamsTab draft={draft} update={update} />}
+        {tab === "companion" && <CompanionTab draft={draft} update={update} />}
         {tab === "general" && <GeneralTab />}
       </main>
       {tab !== "memory" && (
@@ -851,6 +855,114 @@ function MemoryEditor({ edit, setEdit, save }: { edit: { id: number | null; kind
         保存
       </button>
       <button onClick={() => setEdit(null)}>取消</button>
+    </div>
+  );
+}
+
+/** 陪伴：主动聊天和提醒 */
+function CompanionTab({ draft, update }: TabProps) {
+  const p = draft.proactive;
+  const set = (patch: Partial<ProactiveParams>) => update((d) => ({ ...d, proactive: { ...d.proactive, ...patch } }));
+  // 数字框：0 或空表示关闭
+  const minutesField = (value: number | null, onChange: (v: number | null) => void) => (
+    <input type="number" min={0} max={1440} value={value ?? 0} onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0) || null)} />
+  );
+  const setDaily = (i: number, patch: Partial<{ at: string; label: string }>) =>
+    set({ daily: p.daily.map((d, j) => (j === i ? { ...d, ...patch } : d)) });
+
+  return (
+    <div className="tab">
+      <section>
+        <h3>主动聊天</h3>
+        <div className="checks">
+          <label>
+            <input type="checkbox" checked={p.enabled} onChange={(e) => set({ enabled: e.target.checked })} /> 让桌宠主动找我说话、提醒我
+          </label>
+        </div>
+        <p className="muted small">
+          全屏、对话进行中、录音时、气泡开着时不会开口；工作模式和免打扰时段只说重要的提醒（每日提醒、就寝、久坐、agent 等你授权），不闲聊。主动说的话会记进当前人格的对话，你可以直接接着回。
+        </p>
+        <div className="checks" style={{ marginTop: 6 }}>
+          <label>
+            <input type="radio" checked={p.use_model} onChange={() => set({ use_model: true })} /> 用模型按人格口吻写（会把原因和最近几句对话发给辅助模型）
+          </label>
+          <label>
+            <input type="radio" checked={!p.use_model} onChange={() => set({ use_model: false })} /> 只用固定话术
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h3>什么时候说</h3>
+        <div className="grid2 params">
+          <label>
+            很久没聊天时找我聊（分钟）
+            <div className="small muted">人在电脑前、但这么久没和它说话；0 为关闭</div>
+          </label>
+          {minutesField(p.no_chat_minutes, (v) => set({ no_chat_minutes: v }))}
+          <label>
+            久坐提醒（分钟）
+            <div className="small muted">连续用电脑这么久没休息就提醒活动；离开超过 5 分钟重新计时；0 为关闭</div>
+          </label>
+          {minutesField(p.sedentary_minutes, (v) => set({ sedentary_minutes: v }))}
+          <label>
+            就寝提醒
+            <div className="small muted">到点后还在用电脑就催你睡觉，到早上 5 点为止，一晚最多 3 次</div>
+          </label>
+          <div className="reasoning-row" style={{ gridTemplateColumns: "140px auto" }}>
+            <input type="time" value={p.bedtime ?? ""} onChange={(e) => set({ bedtime: e.target.value || null })} />
+            <button style={{ justifySelf: "start" }} onClick={() => set({ bedtime: null })} disabled={!p.bedtime}>
+              关闭
+            </button>
+          </div>
+          <label>
+            Agent 一直等我授权
+            <div className="small muted">报告过之后超过 5 分钟还没处理，再提醒一次</div>
+          </label>
+          <div className="checks">
+            <label>
+              <input type="checkbox" checked={p.agent_follow_up} onChange={(e) => set({ agent_follow_up: e.target.checked })} /> 再提醒
+            </label>
+          </div>
+          <label>
+            每日提醒
+            <div className="small muted">每天到点提醒一次（到点后 30 分钟内，等到可以开口时说）</div>
+          </label>
+          <div>
+            {p.daily.map((d, i) => (
+              <div key={i} className="reasoning-row" style={{ gridTemplateColumns: "120px 1fr auto", marginBottom: 6 }}>
+                <input type="time" value={d.at} onChange={(e) => setDaily(i, { at: e.target.value })} />
+                <input value={d.label} placeholder="提醒什么，比如：喝水、下班、吃药" onChange={(e) => setDaily(i, { label: e.target.value })} />
+                <button onClick={() => set({ daily: p.daily.filter((_, j) => j !== i) })}>删除</button>
+              </div>
+            ))}
+            <button onClick={() => set({ daily: [...p.daily, { at: "12:00", label: "" }] })}>添加提醒</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h3>别打扰我</h3>
+        <div className="grid2 params">
+          <label>
+            免打扰时段
+            <div className="small muted">期间只说重要的提醒；可以跨午夜，比如 23:30～07:30</div>
+          </label>
+          <div className="reasoning-row" style={{ gridTemplateColumns: "120px auto 120px auto" }}>
+            <input type="time" value={p.quiet_start ?? ""} onChange={(e) => set({ quiet_start: e.target.value || null })} />
+            <span className="muted">至</span>
+            <input type="time" value={p.quiet_end ?? ""} onChange={(e) => set({ quiet_end: e.target.value || null })} />
+            <button style={{ justifySelf: "start" }} onClick={() => set({ quiet_start: null, quiet_end: null })} disabled={!p.quiet_start && !p.quiet_end}>
+              不设
+            </button>
+          </div>
+          <label>
+            两次闲聊至少间隔（分钟）
+            <div className="small muted">重要的提醒不受这个限制</div>
+          </label>
+          <input type="number" min={5} max={1440} value={p.min_interval_minutes} onChange={(e) => set({ min_interval_minutes: Math.max(5, Number(e.target.value) || 5) })} />
+        </div>
+      </section>
     </div>
   );
 }

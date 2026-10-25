@@ -39,6 +39,8 @@ pub enum ChatEvent {
     Start { persona: String },
     Delta { persona: String, text: String },
     Done { persona: String, message: Message },
+    /// 对话之外加进来的消息（桌宠主动说的话）
+    Added { persona: String, message: Message },
     Error { persona: String, error: String },
     /// 工具调用进度。status: running / ok / error / denied
     Tool { persona: String, id: String, title: String, status: String, detail: Option<String> },
@@ -55,7 +57,7 @@ pub(crate) fn set_speech(app: &AppHandle, anim: Option<&'static str>, until: Opt
     s.speech_until = until;
 }
 
-fn now_label() -> String {
+pub(crate) fn now_label() -> String {
     let now = chrono::Local::now();
     let week = ["一", "二", "三", "四", "五", "六", "日"][chrono::Datelike::weekday(&now).num_days_from_monday() as usize];
     format!("{}（周{}）", now.format("%Y-%m-%d %H:%M"), week)
@@ -441,6 +443,17 @@ fn tool_note(allowed: &[PathBuf], with_image: bool) -> String {
         s.push_str("用户明确要求画图时，可以用 generate_image 生成图片。\n");
     }
     s
+}
+
+/// 桌宠主动说的话记进对话：用户回复时，模型知道自己刚说了什么
+pub(crate) fn add_assistant_message(app: &AppHandle, persona: &str, text: &str) -> Result<(), String> {
+    let msg = app
+        .state::<AppState>()
+        .store
+        .insert_message(persona, "assistant", text, text, &[])
+        .map_err(|e| e.to_string())?;
+    emit(app, ChatEvent::Added { persona: persona.to_string(), message: msg });
+    Ok(())
 }
 
 /// 正在回复中（主动聊天据此判断能不能打扰）

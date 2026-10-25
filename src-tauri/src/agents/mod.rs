@@ -180,13 +180,16 @@ async fn persona_summary(app: &AppHandle, agent: Agent, project: &str, final_mes
 
 async fn report_out(app: &AppHandle, agent: Agent, cwd: &str, r: Report, p: &AgentsParams) {
     let project = model::project_name(cwd);
-    // 【留接口】告诉主动聊天的触发器（关着时什么都不做）
+    // 告诉主动聊天的触发器（关着时什么都不做）
     let kind = match &r {
         Report::NeedPermission { .. } => crate::proactive::AgentSignalKind::NeedPermission,
         Report::Failed { .. } => crate::proactive::AgentSignalKind::Failed,
         Report::Done { .. } => crate::proactive::AgentSignalKind::Done,
     };
-    crate::proactive::agent_signal(app, crate::proactive::AgentSignal { agent: agent.display(), kind, project: project.clone() });
+    crate::proactive::agent_signal(
+        app,
+        crate::proactive::AgentSignal { agent: agent.display(), kind, project: project.clone(), at: chrono::Local::now() },
+    );
     let where_ = if project.is_empty() { String::new() } else { format!("「{project}」的 ") };
     let (title, text) = match r {
         Report::NeedPermission { tool } => {
