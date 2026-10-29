@@ -57,6 +57,8 @@ pub struct Shared {
     pub agent_anim: Option<&'static str>,
     /// 桌宠当前被隐藏（用户手动隐藏或全屏），汇报时只发系统通知
     pub pet_hidden: bool,
+    /// 桌宠所在显示器上有全屏程序（游戏、视频、放映），不管设置里要不要因此隐藏
+    pub fullscreen: bool,
     /// agent 状态标签窗口的物理像素尺寸；(0, 0) 表示没有要显示的标签
     pub status_size: (i32, i32),
 }

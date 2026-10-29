@@ -132,6 +132,15 @@ export interface ProactiveParams {
   bedtime: string | null;
   daily: DailyReminder[];
   agent_follow_up: boolean;
+  desktop_modes: boolean;
+  focus_apps: string[];
+  silent_apps: string[];
+  encourage_minutes: number | null;
+  welcome_back_minutes: number | null;
+  holidays: boolean;
+  /** "MM-DD" */
+  birthday: string | null;
+  anniversaries: { date: string; label: string }[];
 }
 
 export type AgentId = "claude-code" | "codex" | "dsh";
