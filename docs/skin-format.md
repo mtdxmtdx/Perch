@@ -120,6 +120,8 @@
 - 状态名：`idle` `walk_right` `walk_left` `wave` `talk` `jump` `fall` `land` `drag` `sleep` `sit` `listen` `think` `working` `attention` `error` `done`。
 - 默认是 9 行。如果想给"睡觉"单独画一行，可以做成 11 行的图集（1536×2288），在 `pet.json` 里写 `"spriteVersionNumber": 2`，把新动画画在第 9、10 行，再用 `skin.json` 指过去。第 9、10 行没指定时长的帧按每帧 150ms 播。
 - Perch 的扩展 `rows`：在 `skin.json` 里写 `"rows": 12`（9～32 之间的整数）声明图集有几行，就能再往下多画几行，图集高度相应变成 208 × 行数。写了 `rows` 时按它算，不再看 `spriteVersionNumber`。Codex 不认这个字段，多出来的行在 Codex 里只是用不上。
+- `"hitTest": "live"`：鼠标穿透改为每次换帧时从屏幕上的画面实时判定，而不是加载时给每帧预先算好。效果一样，一般不用写，主要用来测试运行时判定。
+- `"renderer": "<名字>"`：不用精灵图集，改由渲染器插件来画（比如骨骼动画）。这时图集相关的规定都不适用，皮肤文件夹里放什么由插件决定，见 [renderer-plugin.md](renderer-plugin.md)。
 
 ### 坐在窗沿上（sit）
 

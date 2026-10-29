@@ -9,6 +9,7 @@ mod llm;
 mod memory;
 mod pet;
 mod proactive;
+mod plugins;
 mod skin;
 mod speak;
 mod store;
@@ -39,8 +40,12 @@ pub struct AppState {
 struct SkinMetrics {
     cell_w: f64,
     cell_h: f64,
+    /// 预先算好的每帧掩码（精灵图集用）；运行时才知道画面的渲染器不传，改用 set_live_mask
+    #[serde(default)]
     mask_w: usize,
+    #[serde(default)]
     mask_h: usize,
+    #[serde(default)]
     masks: Vec<Vec<u8>>,
     foot_ratio: f64,
     center_ratio: f64,
@@ -61,10 +66,11 @@ fn skin_info(state: State<AppState>) -> Result<Option<skin::SkinInfo>, String> {
     current_skin(&state).map(|e| skin::load_info(&e)).transpose()
 }
 
+/// 读当前皮肤目录里的文件，交给前端的渲染器解析
 #[tauri::command]
-fn skin_image(state: State<AppState>) -> Result<Response, String> {
+fn skin_file(state: State<AppState>, path: String) -> Result<Response, String> {
     let entry = current_skin(&state).ok_or("没有可用的皮肤")?;
-    skin::image_bytes(&entry).map(Response::new)
+    skin::file_bytes(&entry, &path).map(Response::new)
 }
 
 #[tauri::command]
@@ -90,6 +96,22 @@ fn set_skin_metrics(app: AppHandle, state: State<AppState>, metrics: SkinMetrics
 #[tauri::command]
 fn set_frame(state: State<AppState>, index: usize) {
     state.shared.lock().unwrap().frame = index;
+}
+
+/// 提供某个渲染器的插件代码（皮肤用到非内置渲染器时前端来要）
+#[tauri::command]
+fn renderer_plugin(kind: String) -> Result<Option<plugins::PluginCode>, String> {
+    plugins::renderer_plugin(&plugins::plugins_dir(), &kind)
+}
+
+/// 运行时掩码：渲染器按当前画面算出来的（骨骼动画这类没法预先算每一帧的），替换掉原来的掩码
+#[tauri::command]
+fn set_live_mask(state: State<AppState>, w: usize, h: usize, bits: Vec<u8>) -> Result<(), String> {
+    let masks = Masks::live(w, h, bits)?;
+    let mut s = state.shared.lock().unwrap();
+    s.masks = masks;
+    s.frame = 0;
+    Ok(())
 }
 
 #[tauri::command]
@@ -154,9 +176,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             skin_info,
-            skin_image,
+            skin_file,
             set_skin_metrics,
             set_frame,
+            set_live_mask,
+            renderer_plugin,
             pointer_down,
             show_menu,
             commands::settings_get,
