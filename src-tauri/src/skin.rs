@@ -128,22 +128,24 @@ pub fn load_info(entry: &SkinEntry) -> Result<SkinInfo, String> {
     })
 }
 
-pub fn image_bytes(entry: &SkinEntry) -> Result<Vec<u8>, String> {
+/// 读皮肤目录里的一个文件（图集、骨骼、atlas 等，由渲染器决定读什么）。
+/// rel 是相对皮肤目录的路径，不允许跳出皮肤目录。
+pub fn file_bytes(entry: &SkinEntry, rel: &str) -> Result<Vec<u8>, String> {
     if entry.id == BUILTIN_ID {
-        return Ok(BUILTIN_SHEET.to_vec());
+        // 内置皮肤只有一张图集
+        return match rel {
+            "spritesheet.png" => Ok(BUILTIN_SHEET.to_vec()),
+            _ => Err(format!("内置皮肤里没有 {rel}")),
+        };
+    }
+    if rel.is_empty() || Path::new(rel).is_absolute() {
+        return Err("皮肤文件路径必须是相对路径".into());
     }
     let dir = Path::new(&entry.id);
-    let pet = read_json(&dir.join("pet.json")).ok_or("pet.json 读取失败")?;
-    let rel = pet
-        .get("spritesheetPath")
-        .and_then(Value::as_str)
-        .unwrap_or("spritesheet.webp");
-    let path = dir.join(rel);
-    // 不允许 spritesheetPath 跳出皮肤目录
     let canon_dir = dir.canonicalize().map_err(|e| e.to_string())?;
-    let canon = path.canonicalize().map_err(|e| format!("图集不存在: {e}"))?;
+    let canon = dir.join(rel).canonicalize().map_err(|e| format!("皮肤文件 {rel} 不存在: {e}"))?;
     if !canon.starts_with(&canon_dir) {
-        return Err("spritesheetPath 指向了皮肤目录之外".into());
+        return Err(format!("{rel} 指向了皮肤目录之外"));
     }
     std::fs::read(canon).map_err(|e| e.to_string())
 }
@@ -168,13 +170,31 @@ mod tests {
         // 第 12 行是"坐在窗沿上"，用 Perch 的 rows 扩展声明
         assert_eq!(overrides["rows"], 12);
         assert_eq!(overrides["animations"]["sit"]["row"], 11);
-        let png = image_bytes(&e).unwrap();
+        let png = file_bytes(&e, "spritesheet.png").unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         // 图集是 8×12 格、每格 192×208
         let w = u32::from_be_bytes(png[16..20].try_into().unwrap());
         let h = u32::from_be_bytes(png[20..24].try_into().unwrap());
         assert_eq!((w, h), (192 * 8, 208 * 12));
+        assert!(file_bytes(&e, "skin.json").is_err());
         // 老用户迁移时不会选到内置的
         assert!(legacy_default().is_none_or(|l| l.id != BUILTIN_ID));
+    }
+
+    #[test]
+    fn skin_files_stay_inside_the_skin_dir() {
+        let root = std::env::temp_dir().join(format!("perch-skin-test-{}", std::process::id()));
+        let dir = root.join("bird");
+        std::fs::create_dir_all(dir.join("anim")).unwrap();
+        std::fs::write(dir.join("pet.json"), r#"{"displayName":"测试"}"#).unwrap();
+        std::fs::write(dir.join("anim").join("a.skel"), b"skel").unwrap();
+        std::fs::write(root.join("secret.txt"), b"secret").unwrap();
+        let e = entry_for(&dir).unwrap();
+        assert_eq!(file_bytes(&e, "anim/a.skel").unwrap(), b"skel");
+        assert!(file_bytes(&e, "../secret.txt").is_err());
+        assert!(file_bytes(&e, &root.join("secret.txt").to_string_lossy()).is_err());
+        assert!(file_bytes(&e, "").is_err());
+        assert!(file_bytes(&e, "missing.png").is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

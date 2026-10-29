@@ -1,7 +1,7 @@
 // Codex 宠物图集：8 列；v1 为 9 行（1536×1872），v2 为 11 行（多出的 2 行是看向各方向，不用）。
 // 行与帧时长来自 awesome-codex-pet 的 hatch-pet-v1/references/animation-rows.md。
 
-import { invoke } from "@tauri-apps/api/core";
+import type { SkinSource } from "./source";
 import { makePlaceholderSheet } from "./placeholder";
 
 export const COLS = 8;
@@ -100,15 +100,9 @@ function applyOverrides(anims: Record<string, AnimSpec>, overrides: unknown, row
   }
 }
 
-interface SkinInfo {
-  id: string;
-  name: string;
-  pet: { spriteVersionNumber?: number };
-  overrides: unknown;
-}
-
-export async function loadCurrentSkin(): Promise<LoadedSkin> {
-  const info = await invoke<SkinInfo | null>("skin_info");
+/** 从皮肤文件夹读 Codex 格式的图集；src.info 为 null 时用程序画的占位形象 */
+export async function loadCodexSkin(src: SkinSource): Promise<LoadedSkin> {
+  const info = src.info;
   if (!info) {
     const sheet = makePlaceholderSheet();
     return {
@@ -124,7 +118,7 @@ export async function loadCurrentSkin(): Promise<LoadedSkin> {
       canSit: false,
     };
   }
-  const buf = await invoke<ArrayBuffer>("skin_image");
+  const buf = await src.readFile(info.pet.spritesheetPath ?? "spritesheet.webp");
   const bmp = await createImageBitmap(new Blob([buf]));
   // Perch 自己的扩展：skin.json 可以用 rows 声明更多行（比如多一行"坐"），否则按 Codex 规定 9 行（v2 为 11 行）
   const extra = info.overrides as { rows?: unknown; animations?: Record<string, unknown> } | null;

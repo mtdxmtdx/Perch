@@ -79,6 +79,8 @@ cargo test --lib
 
 **皮肤**：默认是内置的栖栖。想换别的，把 Codex 宠物文件夹放进 `%USERPROFILE%\.codex\pets\` 或 `%APPDATA%\Perch\skins\`，在托盘「皮肤」菜单里选择。自己做皮肤的格式见 [docs/skin-format.md](docs/skin-format.md)。
 
+**渲染器插件**：精灵图集以外的形象（比如骨骼动画）由插件负责画，插件放在 `%APPDATA%\Perch\plugins\` 下，皮肤在 `skin.json` 里写明要用哪个渲染器，用到时才加载。插件格式见 [docs/renderer-plugin.md](docs/renderer-plugin.md)，[examples/renderer-plugin](examples/renderer-plugin) 里有一个可以直接用的示例。插件代码在桌宠窗口里运行，只安装你信任的插件。
+
 ## 数据与隐私
 
 - 设置、聊天记录、记忆、语音模型和运行库都在 `%APPDATA%\Perch`；API Key 存在 Windows 凭据管理器，不写进配置文件。
@@ -92,7 +94,7 @@ cargo test --lib
 - 安装包不附带语音运行库，开启语音输入时在设置里下载（运行库来自 GitHub，网络不好时可以手动下载 [sherpa-onnx v2.0.0 的 Windows 动态库](https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.0/sherpa-onnx-v2.0.0-win-x64-shared-MT-Release-lib.tar.bz2)，解压后在设置里指定 `lib` 文件夹）。
 - 换了运行库文件夹要重启程序才生效。
 - 只支持 Windows。
-- 预留了接口、尚未实现：桌宠主动聊天、TTS 语音输出、向量检索记忆、在桌宠里审批 agent 授权、Live2D、本地生图。
+- 预留了接口、尚未实现：TTS 语音输出、向量检索记忆、在桌宠里审批 agent 授权、本地生图。
 
 ## 致谢
 

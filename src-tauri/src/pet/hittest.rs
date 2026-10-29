@@ -11,6 +11,17 @@ pub struct Masks {
 }
 
 impl Masks {
+    /// 单帧的运行时掩码，尺寸和长度不对时拒绝
+    pub fn live(w: usize, h: usize, bits: Vec<u8>) -> Result<Self, String> {
+        if w == 0 || h == 0 || w > 1024 || h > 1024 {
+            return Err(format!("掩码尺寸不对: {w}×{h}"));
+        }
+        if bits.len() < (w * h).div_ceil(8) {
+            return Err("掩码数据长度不够".into());
+        }
+        Ok(Self { w, h, frames: vec![bits] })
+    }
+
     fn bit(&self, frame: usize, x: usize, y: usize) -> bool {
         let Some(bits) = self.frames.get(frame) else { return false };
         let i = y * self.w + x;
@@ -49,5 +60,18 @@ mod tests {
         assert!(hit(&m, 0, win, (138, 138)));
         assert!(!hit(&m, 0, win, (101, 101)));
         assert!(!hit(&m, 0, win, (50, 50)));
+    }
+
+    #[test]
+    fn live_mask_is_checked() {
+        assert!(Masks::live(0, 4, vec![0; 2]).is_err());
+        assert!(Masks::live(4, 4, vec![0; 1]).is_err());
+        assert!(Masks::live(2000, 4, vec![0; 1000]).is_err());
+        let mut bits = vec![0u8; 2];
+        bits[0] |= 1;
+        let m = Masks::live(4, 4, bits).unwrap();
+        let win = Rect { l: 0, t: 0, r: 40, b: 40 };
+        assert!(hit(&m, 0, win, (2, 2)));
+        assert!(!hit(&m, 0, win, (35, 35)));
     }
 }

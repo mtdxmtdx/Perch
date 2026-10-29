@@ -1,6 +1,12 @@
-import type { Renderer } from "./Renderer";
-import { COLS, type AnimSpec, type LoadedSkin } from "../skin/codexPet";
+import type { HitUpdate, LoadResult, Renderer } from "./Renderer";
+import type { SkinSource } from "../skin/source";
+import { COLS, loadCodexSkin, type AnimSpec, type LoadedSkin } from "../skin/codexPet";
+import { LiveMask, spriteMasks } from "../masks";
 
+/**
+ * 内置渲染器：Codex 格式的精灵图集，画在 2D 画布上。
+ * 鼠标穿透默认预先算好每帧掩码；skin.json 写 "hitTest": "live" 时改为每次换帧从画面读。
+ */
 export class SpriteRenderer implements Renderer {
   private canvas?: HTMLCanvasElement;
   private ctx?: CanvasRenderingContext2D;
@@ -9,20 +15,29 @@ export class SpriteRenderer implements Renderer {
   private spec?: AnimSpec;
   private step = 0;
   private timer?: number;
-  private frameCb?: (i: number) => void;
+  private hitCb?: (u: HitUpdate) => void;
+  private live?: LiveMask;
 
-  mount(canvas: HTMLCanvasElement) {
+  mount(host: HTMLElement) {
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "width:100%;height:100%;display:block";
+    host.appendChild(canvas);
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
     this.resize();
   }
 
-  async load(skin: LoadedSkin) {
+  async load(src: SkinSource): Promise<LoadResult> {
+    const skin = await loadCodexSkin(src);
+    const { layout, frameMasks } = spriteMasks(skin);
+    const liveHit = (src.info?.overrides as { hitTest?: unknown } | null)?.hitTest === "live";
+    this.live = liveHit ? new LiveMask(0) : undefined;
     this.skin = skin;
     // 换皮肤后继续播放当前状态
     const current = this.animName || "idle";
     this.animName = "";
     this.play(current);
+    return { layout, frameMasks: liveHit ? undefined : frameMasks };
   }
 
   play(anim: string) {
@@ -34,8 +49,8 @@ export class SpriteRenderer implements Renderer {
     this.schedule();
   }
 
-  onFrame(cb: (frameIndex: number) => void) {
-    this.frameCb = cb;
+  onHit(cb: (u: HitUpdate) => void) {
+    this.hitCb = cb;
   }
 
   resize() {
@@ -43,11 +58,13 @@ export class SpriteRenderer implements Renderer {
     const dpr = window.devicePixelRatio || 1;
     this.canvas.width = Math.round(window.innerWidth * dpr);
     this.canvas.height = Math.round(window.innerHeight * dpr);
+    this.live?.reset();
     this.draw();
   }
 
   destroy() {
     clearTimeout(this.timer);
+    this.canvas?.remove();
   }
 
   private schedule() {
@@ -81,6 +98,11 @@ export class SpriteRenderer implements Renderer {
       canvas.width,
       canvas.height,
     );
-    this.frameCb?.(spec.row * COLS + col);
+    if (this.live) {
+      const mask = this.live.sample(canvas);
+      if (mask) this.hitCb?.({ mask });
+    } else {
+      this.hitCb?.({ frame: spec.row * COLS + col });
+    }
   }
 }
