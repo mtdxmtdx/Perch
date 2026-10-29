@@ -117,8 +117,29 @@
 ```
 
 - 每项可以写 `row`（第几行）、`frames`（用哪几帧）、`durations`（每帧毫秒数）、`loop`（是否循环）、`speed`（速度倍数）。没写的沿用默认。
-- 状态名：`idle` `walk_right` `walk_left` `wave` `talk` `jump` `fall` `land` `drag` `sleep` `listen` `think` `working` `attention` `error` `done`。
+- 状态名：`idle` `walk_right` `walk_left` `wave` `talk` `jump` `fall` `land` `drag` `sleep` `sit` `listen` `think` `working` `attention` `error` `done`。
 - 默认是 9 行。如果想给"睡觉"单独画一行，可以做成 11 行的图集（1536×2288），在 `pet.json` 里写 `"spriteVersionNumber": 2`，把新动画画在第 9、10 行，再用 `skin.json` 指过去。第 9、10 行没指定时长的帧按每帧 150ms 播。
+- Perch 的扩展 `rows`：在 `skin.json` 里写 `"rows": 12`（9～32 之间的整数）声明图集有几行，就能再往下多画几行，图集高度相应变成 208 × 行数。写了 `rows` 时按它算，不再看 `spriteVersionNumber`。Codex 不认这个字段，多出来的行在 Codex 里只是用不上。
+
+### 坐在窗沿上（sit）
+
+站在某个窗口的顶边时，桌宠偶尔会在边沿上坐一会儿（20～60 秒）。**只有 `skin.json` 里写了 `sit` 的皮肤才会坐**，没写的皮肤不受影响。
+
+```json
+{
+  "rows": 12,
+  "animations": {
+    "sit": { "row": 11, "frames": [0, 1, 2, 3, 4, 5], "durations": [900, 900, 110, 110, 1100, 900], "loop": true }
+  }
+}
+```
+
+画法建议：
+
+- 身体压低，肚子贴着脚底基线（y = 196），脚收起来。窗口顶边就在基线这里，基线以下是窗口外面，可以画尾巴、脚垂在边沿外。
+- 基线以下最多还有 12px，别画出格子底边。
+- 水平中心和 idle 一致（x = 96），否则坐下时会左右跳一下。
+- 只用来循环，节奏可以慢一点：偶尔眨眼、歪头、晃尾巴。
 
 ## 默认皮肤「栖栖」
 
@@ -126,7 +147,7 @@
 
 - 它是用代码画出来的：`tools/bird-skin/generate.mjs` 按图标的造型和配色画出小鸟的各个部件，用参数摆出每一帧，再渲染成图集。
   - 想改造型或动作，改这个脚本后运行 `pnpm skin:bird`，会重新生成 `src-tauri/resources/skins/perch-bird/` 下的三个文件，编译时打进程序。
-- 用的是 11 行图集：
+- 用的是 12 行图集（`skin.json` 里 `"rows": 12`）：
   - 第 0～8 行按上面的规定。
-  - 第 9 行是睡觉（把头埋起来），第 10 行是在听你说话，通过 `skin.json` 映射。
+  - 第 9 行是睡觉（把头埋起来），第 10 行是在听你说话，第 11 行是坐在窗沿上，通过 `skin.json` 映射。
 - 想换成手绘版本，按本文档画好图集，替换这三个文件即可，程序不用改。

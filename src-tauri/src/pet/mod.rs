@@ -32,6 +32,8 @@ impl Default for Metrics {
 pub struct Shared {
     /// 皮肤和掩码都就绪后才显示窗口
     pub ready: bool,
+    /// 当前皮肤有"坐"的动画（skin.json 里定义了 sit）：有才会坐在窗沿上
+    pub can_sit: bool,
     pub masks: Masks,
     pub frame: usize,
     pub metrics: Metrics,

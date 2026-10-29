@@ -32,6 +32,8 @@ enum Act {
     Idle,
     Walk { dir: f64 },
     Sleep,
+    /// 坐在窗沿上（只在窗口顶边，且皮肤有坐的动画时）
+    Sit,
     Wave,
     Land,
 }
@@ -68,6 +70,8 @@ struct Ctl {
     status_right: bool,
     /// 环境变量 PERCH_DEBUG=1 时打印状态切换和可站面
     debug: bool,
+    /// 环境变量 PERCH_DEBUG_SIT=1 时，站在窗口顶边一有机会就坐（测试用）
+    force_sit: bool,
     last_debug: Instant,
 }
 
@@ -115,6 +119,7 @@ impl Ctl {
             status_pos: None,
             status_right: true,
             debug: std::env::var_os("PERCH_DEBUG").is_some(),
+            force_sit: std::env::var_os("PERCH_DEBUG_SIT").is_some(),
             last_debug: Instant::now(),
         };
         ctl.place_initial(1.0);
@@ -461,6 +466,7 @@ impl Ctl {
                 Act::Walk { dir } if *dir > 0.0 => "walk_right",
                 Act::Walk { .. } => "walk_left",
                 Act::Sleep => "sleep",
+                Act::Sit => "sit",
                 Act::Wave => "wave",
                 Act::Land => "land",
             },
@@ -558,6 +564,7 @@ impl Ctl {
     ) -> Mode {
         let now = Instant::now();
         let fall = Mode::Air { vx: 0.0, vy: 0.0 };
+        let can_sit = self.shared.lock().unwrap().can_sit;
 
         // 先跟随地面：任务栏高度可能变，宿主窗口可能移动、消失或被遮挡
         let (ground, bounds) = match ground {
@@ -593,19 +600,24 @@ impl Ctl {
                 act = Act::Idle;
                 until = now + Duration::from_secs(1);
             } else {
-                let r = fastrand::f64();
-                if r < 0.38 {
+                // 站在窗口顶边、皮肤会坐时，可以坐一会儿（调试：PERCH_DEBUG_SIT=1 时一有机会就坐）
+                let may_sit = can_sit && matches!(ground, Ground::Window { .. });
+                let r = if may_sit && self.force_sit { 0.7 } else { fastrand::f64() };
+                if r < 0.34 {
                     act = Act::Walk { dir: if fastrand::bool() { 1.0 } else { -1.0 } };
                     until = now + rand_secs(2.0, 6.0);
-                } else if r < 0.60 {
+                } else if r < 0.54 {
                     if let Some((vx, vy)) = self.plan_jump(k, w, h) {
                         return Mode::Air { vx, vy };
                     }
                     act = Act::Idle;
                     until = now + rand_secs(2.0, 5.0);
-                } else if r < 0.68 {
+                } else if r < 0.62 {
                     act = Act::Sleep;
                     until = now + rand_secs(10.0, 25.0);
+                } else if r < 0.82 && may_sit {
+                    act = Act::Sit;
+                    until = now + rand_secs(20.0, 60.0);
                 } else {
                     act = Act::Idle;
                     until = now + rand_secs(3.0, 8.0);

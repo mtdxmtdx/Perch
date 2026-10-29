@@ -39,6 +39,8 @@ export interface LoadedSkin {
   cellW: number;
   cellH: number;
   anims: Record<string, AnimSpec>;
+  /** skin.json 里定义了"坐"的动画（sit）：有才会坐在窗沿上 */
+  canSit: boolean;
 }
 
 function fullRow(row: number, loop = true, speed = 1): AnimSpec {
@@ -62,6 +64,8 @@ export function defaultAnims(): Record<string, AnimSpec> {
     land: pick(4, [4]),
     drag: pick(4, [2]),
     sleep: fullRow(6, true, 0.4),
+    // 坐在窗沿上：Codex 图集没有这一行，皮肤要在 skin.json 里自己指定；没指定的皮肤不会坐
+    sit: fullRow(0),
     // 以下给后续里程碑用（对话、agent 状态）
     talk: fullRow(3),
     think: fullRow(8),
@@ -117,11 +121,15 @@ export async function loadCurrentSkin(): Promise<LoadedSkin> {
       cellW: sheet.width / COLS,
       cellH: sheet.height / 9,
       anims: defaultAnims(),
+      canSit: false,
     };
   }
   const buf = await invoke<ArrayBuffer>("skin_image");
   const bmp = await createImageBitmap(new Blob([buf]));
-  const rows = info.pet.spriteVersionNumber === 2 ? 11 : 9;
+  // Perch 自己的扩展：skin.json 可以用 rows 声明更多行（比如多一行"坐"），否则按 Codex 规定 9 行（v2 为 11 行）
+  const extra = info.overrides as { rows?: unknown; animations?: Record<string, unknown> } | null;
+  const declared = typeof extra?.rows === "number" && Number.isInteger(extra.rows) && extra.rows >= 9 && extra.rows <= 32 ? extra.rows : null;
+  const rows = declared ?? (info.pet.spriteVersionNumber === 2 ? 11 : 9);
   const anims = defaultAnims();
   applyOverrides(anims, info.overrides, rows);
   return {
@@ -134,5 +142,6 @@ export async function loadCurrentSkin(): Promise<LoadedSkin> {
     cellW: bmp.width / COLS,
     cellH: bmp.height / rows,
     anims,
+    canSit: !!extra?.animations?.sit,
   };
 }
