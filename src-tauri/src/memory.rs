@@ -1,20 +1,148 @@
 //! 长期记忆：后台由辅助模型从对话中提取，超过上限时合并去重。
-//! 第一版把全部记忆注入 prompt（FullInjectRetriever）；MemoryRetriever 为以后的混合检索留位置。
+//! 放进提示词时：核心记忆全部带上；事件记忆在配了向量模型时只挑和当前对话相关的几条加最近的几条，
+//! 没配（或者向量服务出错）时全部带上。
 
+use crate::config::Config;
 use crate::llm::{self, ChatMessage, Endpoint};
 use crate::store::{Memory, Message, Store};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 
-/// 【留接口】按当前对话挑选要注入的记忆。以后加向量检索时实现一个新的 retriever。
-pub trait MemoryRetriever {
-    fn retrieve(&self, store: &Store, query: &str) -> Vec<Memory>;
+/// 除了相关的，总会带上最近更新的几条事件记忆（"上次说的那个"这类指代靠它）
+const RECENT_EVENTS: usize = 3;
+/// 一次最多给多少条记忆算向量
+const EMBED_BATCH: usize = 32;
+
+/// 向量检索的配置：用哪个向量模型、每次挑几条
+pub struct Recall {
+    ep: Endpoint,
+    /// 区分向量是哪个模型算的，换了地址或模型名就要重算
+    key: String,
+    pub top_k: usize,
 }
 
-pub struct FullInjectRetriever;
+impl Recall {
+    /// 配了向量模型才有
+    pub fn from_config(cfg: &Config) -> Option<Self> {
+        let p = cfg.provider(cfg.roles.embedding.as_deref())?;
+        if p.model.trim().is_empty() {
+            return None;
+        }
+        let ep = Endpoint::from_provider(p);
+        Some(Self { key: format!("{}|{}", ep.base_url, ep.model), ep, top_k: cfg.chat.memory_top_k.max(1) })
+    }
+}
 
-impl MemoryRetriever for FullInjectRetriever {
-    fn retrieve(&self, store: &Store, _query: &str) -> Vec<Memory> {
-        store.memories().unwrap_or_default()
+/// 记忆条数上限：配了向量模型时只挑相关的放进提示词，可以记得更多
+pub fn memory_limit(cfg: &Config) -> usize {
+    if Recall::from_config(cfg).is_some() {
+        cfg.chat.memory_limit_retrieval
+    } else {
+        cfg.chat.memory_limit
+    }
+}
+
+/// 挑出要放进提示词的记忆。query 是当前对话的要点（最近几句）
+pub async fn recall(store: &Store, recall: Option<&Recall>, query: &str) -> Vec<Memory> {
+    let all = store.memories().unwrap_or_default();
+    let Some(r) = recall else { return all };
+    match recall_with(store, r, &all, query, r.top_k).await {
+        Ok(v) => v,
+        Err(e) => {
+            // 向量服务出错时退回全部注入，聊天不受影响
+            eprintln!("[memory] 向量检索失败，改为全部注入：{e}");
+            all
+        }
+    }
+}
+
+async fn recall_with(store: &Store, r: &Recall, all: &[Memory], query: &str, top_k: usize) -> Result<Vec<Memory>, String> {
+    let events = all.iter().filter(|m| m.kind != "core").count();
+    // 事件记忆不多时用不着检索，省一次请求
+    if events <= top_k + RECENT_EVENTS || query.trim().is_empty() {
+        return Ok(all.to_vec());
+    }
+    let mut vectors: HashMap<i64, Vec<f32>> = store.memory_vectors(&r.key).map_err(|e| e.to_string())?.into_iter().collect();
+    // 还没算向量的事件记忆和问题一起算（一般只有最近新增的几条）
+    let missing: Vec<&Memory> = all
+        .iter()
+        .filter(|m| m.kind != "core" && !vectors.contains_key(&m.id))
+        .take(EMBED_BATCH)
+        .collect();
+    let mut inputs = vec![query.to_string()];
+    inputs.extend(missing.iter().map(|m| m.content.clone()));
+    let mut out = llm::embed(&r.ep, &inputs).await?.into_iter();
+    let q = normalize(out.next().ok_or("没有拿到问题的向量")?);
+    for (m, v) in missing.iter().zip(out) {
+        let v = normalize(v);
+        let _ = store.set_memory_vector(m.id, &r.key, &v);
+        vectors.insert(m.id, v);
+    }
+    let scores: HashMap<i64, f32> = vectors.iter().map(|(id, v)| (*id, dot(&q, v))).collect();
+    Ok(select(all, &scores, top_k, RECENT_EVENTS))
+}
+
+/// 核心记忆全要；事件记忆取最近的 recent 条，再按相关度取 top_k 条。
+/// 没有向量的事件记忆（没算出来的）也带上，宁多勿漏。结果保持原来的顺序。
+fn select(all: &[Memory], scores: &HashMap<i64, f32>, top_k: usize, recent: usize) -> Vec<Memory> {
+    let mut events: Vec<&Memory> = all.iter().filter(|m| m.kind != "core").collect();
+    let mut keep: HashSet<i64> = HashSet::new();
+    events.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(b.id.cmp(&a.id)));
+    keep.extend(events.iter().take(recent).map(|m| m.id));
+    keep.extend(events.iter().filter(|m| !scores.contains_key(&m.id)).map(|m| m.id));
+    let mut ranked: Vec<(&Memory, f32)> = events.iter().filter_map(|m| scores.get(&m.id).map(|s| (*m, *s))).collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    keep.extend(ranked.iter().filter(|(m, _)| !keep.contains(&m.id)).take(top_k).map(|(m, _)| m.id).collect::<Vec<_>>());
+    all.iter().filter(|m| m.kind == "core" || keep.contains(&m.id)).cloned().collect()
+}
+
+/// 后台补算还没有向量的记忆（提取、合并之后调用），返回补了几条
+pub async fn backfill(store: &Store, r: &Recall) -> Result<usize, String> {
+    let have: HashSet<i64> = store.memory_vectors(&r.key).map_err(|e| e.to_string())?.into_iter().map(|(id, _)| id).collect();
+    let missing: Vec<Memory> = store
+        .memories()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|m| m.kind != "core" && !have.contains(&m.id))
+        .collect();
+    for chunk in missing.chunks(EMBED_BATCH) {
+        let inputs: Vec<String> = chunk.iter().map(|m| m.content.clone()).collect();
+        let vecs = llm::embed(&r.ep, &inputs).await?;
+        for (m, v) in chunk.iter().zip(vecs) {
+            store.set_memory_vector(m.id, &r.key, &normalize(v)).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(missing.len())
+}
+
+/// 给记忆提取用：配了向量模型时只给辅助模型看核心记忆和与最近对话相关的事件记忆，记忆多了也不会把提示词撑爆
+pub async fn recall_for_extract(store: &Store, recall: Option<&Recall>, query: &str) -> Vec<Memory> {
+    let all = store.memories().unwrap_or_default();
+    let Some(r) = recall else { return all };
+    recall_with(store, r, &all, query, 30).await.unwrap_or(all)
+}
+
+fn normalize(mut v: Vec<f32>) -> Vec<f32> {
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if n > 0.0 {
+        v.iter_mut().for_each(|x| *x /= n);
+    }
+    v
+}
+
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// 检索用的问题：用户刚说的话。很短时（"那后来呢"这类）带上前一条消息补充话题，
+/// 否则只看这一句，免得上一个话题把新话题的记忆挤掉
+pub fn query_text(recent: &[Message]) -> String {
+    let take = |m: &Message, n: usize| m.display.chars().take(n).collect::<String>();
+    let Some((last, before)) = recent.split_last() else { return String::new() };
+    let now = take(last, 500);
+    match before.last() {
+        Some(prev) if now.chars().count() < 8 => format!("{}\n{now}", take(prev, 200)),
+        _ => now,
     }
 }
 
@@ -94,14 +222,16 @@ const EXTRACT_PROMPT: &str = r#"你负责维护一个桌宠对"用户"的长期�
 const CONSOLIDATE_PROMPT: &str = r#"下面是桌宠关于用户的全部长期记忆，条数太多了。请合并重复、删除过时和琐碎的条目，把总数压缩到 LIMIT 条以内，保留最重要的信息。
 只输出 JSON：{"memories":[{"kind":"core","content":"..."},{"kind":"event","content":"..."}]}"#;
 
+/// existing：给辅助模型看的已有记忆（它只能改、删这些）
 pub async fn extract(
     store: &Store,
     ep: &Endpoint,
+    existing: &[Memory],
     recent: &[Message],
     persona_name: &str,
     today: &str,
 ) -> Result<usize, String> {
-    let existing = store.memories().map_err(|e| e.to_string())?;
+    let all = store.memories().map_err(|e| e.to_string())?;
     let existing_json: Vec<Value> = existing
         .iter()
         .map(|m| serde_json::json!({ "id": m.id, "kind": m.kind, "content": m.content }))
@@ -119,7 +249,7 @@ pub async fn extract(
     for op in ops {
         let r = match &op {
             Op::Add { kind, content } => {
-                if existing.iter().any(|m| m.content == *content) {
+                if all.iter().any(|m| m.content == *content) {
                     continue;
                 }
                 store.add_memory(kind, content).map(|_| ())
@@ -199,5 +329,47 @@ mod tests {
         let b = prompt_block(&[m("core", "叫小潘"), m("event", "10/20 面试")]).unwrap();
         assert!(b.contains("[核心] 叫小潘") && b.contains("[事件] 10/20 面试"));
         assert!(prompt_block(&[]).is_none());
+    }
+
+    fn mem(id: i64, kind: &str, updated_at: i64) -> Memory {
+        Memory { id, kind: kind.into(), content: format!("m{id}"), created_at: 0, updated_at }
+    }
+
+    #[test]
+    fn select_keeps_core_recent_relevant_and_unembedded() {
+        // 1 是核心；2~9 是事件，updated_at 越大越新；9 没有向量
+        let mut all = vec![mem(1, "core", 0)];
+        all.extend((2..=9).map(|i| mem(i, "event", i)));
+        let scores: HashMap<i64, f32> = [(2, 0.9), (3, 0.1), (4, 0.8), (5, 0.2), (6, 0.3), (7, 0.05), (8, 0.0)].into_iter().collect();
+        let ids: Vec<i64> = select(&all, &scores, 2, 2).iter().map(|m| m.id).collect();
+        // 核心 1；最近的 9、8；相关度最高的 2、4（不和最近的重复）；9 没向量本来就会带上
+        assert_eq!(ids, vec![1, 2, 4, 8, 9]);
+    }
+
+    #[test]
+    fn query_uses_previous_message_only_when_short() {
+        let m = |id: i64, role: &str, t: &str| Message {
+            id,
+            persona: "p".into(),
+            role: role.into(),
+            display: t.into(),
+            llm_text: t.into(),
+            attachments: vec![],
+            created_at: 0,
+            reasoning: None,
+        };
+        let long = [m(1, "assistant", "团团还好吗"), m(2, "user", "下周想再去杭州玩，顺便跑个步，你觉得呢")];
+        assert_eq!(query_text(&long), "下周想再去杭州玩，顺便跑个步，你觉得呢");
+        let short = [m(1, "assistant", "团团还好吗"), m(2, "user", "后来呢")];
+        assert_eq!(query_text(&short), "团团还好吗\n后来呢");
+        assert_eq!(query_text(&[]), "");
+    }
+
+    #[test]
+    fn normalize_and_dot_give_cosine() {
+        let a = normalize(vec![3.0, 4.0]);
+        assert!((a[0] - 0.6).abs() < 1e-6 && (a[1] - 0.8).abs() < 1e-6);
+        assert!((dot(&a, &normalize(vec![6.0, 8.0])) - 1.0).abs() < 1e-6);
+        assert_eq!(normalize(vec![0.0, 0.0]), vec![0.0, 0.0]);
     }
 }

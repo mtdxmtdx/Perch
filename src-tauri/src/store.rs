@@ -143,6 +143,13 @@ impl Store {
         if !has_reasoning {
             conn.execute_batch("ALTER TABLE messages ADD COLUMN reasoning TEXT")?;
         }
+        // 记忆向量是哪个向量模型算的（换了模型要重算）
+        let has_embed_key = conn
+            .prepare("SELECT 1 FROM pragma_table_info('memories') WHERE name = 'embed_key'")?
+            .exists([])?;
+        if !has_embed_key {
+            conn.execute_batch("ALTER TABLE memories ADD COLUMN embed_key TEXT")?;
+        }
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -270,7 +277,11 @@ impl Store {
     pub fn update_memory(&self, id: i64, kind: Option<&str>, content: &str) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE memories SET content = ?2, kind = COALESCE(?3, kind), updated_at = ?4 WHERE id = ?1",
+            // 内容变了，旧向量作废
+            "UPDATE memories SET content = ?2, kind = COALESCE(?3, kind), updated_at = ?4,
+                 embedding = CASE WHEN content = ?2 THEN embedding END,
+                 embed_key = CASE WHEN content = ?2 THEN embed_key END
+             WHERE id = ?1",
             params![id, content, kind, now_secs()],
         )?;
         Ok(())
@@ -279,6 +290,23 @@ impl Store {
     pub fn delete_memory(&self, id: i64) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// 用 key 这个向量模型算好的记忆向量
+    pub fn memory_vectors(&self, key: &str) -> rusqlite::Result<Vec<(i64, Vec<f32>)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, embedding FROM memories WHERE embed_key = ?1 AND embedding IS NOT NULL")?;
+        let rows = stmt.query_map(params![key], |r| Ok((r.get::<_, i64>(0)?, decode_vector(&r.get::<_, Vec<u8>>(1)?))))?;
+        rows.collect()
+    }
+
+    pub fn set_memory_vector(&self, id: i64, key: &str, v: &[f32]) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE memories SET embedding = ?2, embed_key = ?3 WHERE id = ?1",
+            params![id, encode_vector(v), key],
+        )?;
         Ok(())
     }
 
@@ -325,6 +353,14 @@ impl Store {
             params![key, value],
         );
     }
+}
+
+fn encode_vector(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+fn decode_vector(b: &[u8]) -> Vec<f32> {
+    b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
 }
 
 #[cfg(test)]
@@ -381,6 +417,14 @@ mod tests {
         let all = s.memories().unwrap();
         assert_eq!(all.len(), 2);
         assert!(all.iter().any(|m| m.content == "喜欢三花猫" && m.kind == "core"));
+        // 向量：按模型区分，改了内容就作废，内容没变保留
+        s.set_memory_vector(id, "m1", &[0.5, -1.0]).unwrap();
+        assert_eq!(s.memory_vectors("m1").unwrap(), vec![(id, vec![0.5, -1.0])]);
+        assert!(s.memory_vectors("m2").unwrap().is_empty());
+        s.update_memory(id, Some("core"), "喜欢三花猫").unwrap();
+        assert_eq!(s.memory_vectors("m1").unwrap().len(), 1);
+        s.update_memory(id, None, "喜欢橘猫").unwrap();
+        assert!(s.memory_vectors("m1").unwrap().is_empty());
         s.replace_memories(&[("core".into(), "合并后".into())]).unwrap();
         assert_eq!(s.memories().unwrap().len(), 1);
     }

@@ -442,12 +442,13 @@ pub async fn compose(app: &AppHandle, intent: &Intent, use_model: bool) -> Strin
 
 async fn compose_with_model(app: &AppHandle, intent: &Intent) -> Result<String, String> {
     use crate::llm::{self, ChatMessage, Endpoint};
-    use crate::memory::{self, FullInjectRetriever, MemoryRetriever};
+    use crate::memory;
     let state = app.state::<AppState>();
     let cfg = state.config.lock().unwrap().clone();
     let persona = cfg.active_persona();
     let provider = cfg.aux_provider(&persona).ok_or("没有可用的模型")?;
-    let memory = memory::prompt_block(&FullInjectRetriever.retrieve(&state.store, &intent.reason)).unwrap_or_default();
+    let recall = memory::Recall::from_config(&cfg);
+    let memory = memory::prompt_block(&memory::recall(&state.store, recall.as_ref(), &intent.reason).await).unwrap_or_default();
     let recent: Vec<String> = state
         .store
         .history(&persona.id, None, 6)

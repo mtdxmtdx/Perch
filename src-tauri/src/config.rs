@@ -230,6 +230,8 @@ pub struct Roles {
     pub aux: Option<String>,
     /// 生图（M3）
     pub image: Option<String>,
+    /// 向量模型（OpenAI 兼容的 /embeddings）：配了就按相关度挑事件记忆，不配就全部注入
+    pub embedding: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -288,6 +290,10 @@ pub struct ChatParams {
     pub memory_extract_every: usize,
     /// 记忆条数上限，超过就合并去重
     pub memory_limit: usize,
+    /// 配了向量模型时的记忆条数上限（只挑相关的放进提示词，可以记得更多）
+    pub memory_limit_retrieval: usize,
+    /// 配了向量模型时，每次放进提示词的相关事件记忆条数（另外总会带上最近的几条）
+    pub memory_top_k: usize,
     /// 单个文件附件最多注入多少字
     pub file_chars: usize,
     /// 气泡里最多显示多少字，超出提示展开
@@ -300,6 +306,8 @@ impl Default for ChatParams {
             context_tokens: 24000,
             memory_extract_every: 5,
             memory_limit: 80,
+            memory_limit_retrieval: 400,
+            memory_top_k: 8,
             file_chars: 20000,
             bubble_chars: 160,
         }
