@@ -39,12 +39,15 @@ interface Draft {
 const newId = () => crypto.randomUUID().slice(0, 8);
 
 // 模型名只是示例，以厂商文档为准
-const PRESETS: { label: string; base_url: string; model: string; style: string; vision?: boolean }[] = [
+const PRESETS: { label: string; base_url: string; model: string; style: string; vision?: boolean; embedding?: boolean }[] = [
   { label: "DeepSeek", base_url: "https://api.deepseek.com/v1", model: "deepseek-flash", style: "deepseek", vision: true },
   { label: "通义千问（阿里云百炼）", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus", style: "qwen" },
   { label: "硅基流动", base_url: "https://api.siliconflow.cn/v1", model: "deepseek-ai/DeepSeek-V3", style: "openai" },
   { label: "OpenRouter", base_url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o-mini", style: "openrouter" },
   { label: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4o-mini", style: "openai" },
+  { label: "向量模型：硅基流动 bge-m3", base_url: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3", style: "openai", embedding: true },
+  { label: "向量模型：通义 text-embedding-v4", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v4", style: "openai", embedding: true },
+  { label: "向量模型：OpenAI text-embedding-3-small", base_url: "https://api.openai.com/v1", model: "text-embedding-3-small", style: "openai", embedding: true },
   { label: "自定义", base_url: "https://", model: "", style: "openai" },
 ];
 
@@ -201,7 +204,9 @@ function ModelsTab({
   const add = (presetIdx: number) => {
     const pr = PRESETS[presetIdx];
     const p: Provider = { id: newId(), name: pr.label, base_url: pr.base_url, model: pr.model, supports_vision: !!pr.vision, supports_tools: true, reasoning_effort: "", reasoning_style: pr.style };
-    update((d) => ({ ...d, providers: [...d.providers, p], roles: d.roles.chat ? d.roles : { ...d.roles, chat: p.id } }));
+    // 向量模型填进"向量"用途（还没选的话），对话模型填进"主对话"
+    const role = pr.embedding ? "embedding" : "chat";
+    update((d) => ({ ...d, providers: [...d.providers, p], roles: d.roles[role] ? d.roles : { ...d.roles, [role]: p.id } }));
   };
 
   const remove = (id: string) =>
@@ -210,7 +215,7 @@ function ModelsTab({
       return {
         ...d,
         providers: d.providers.filter((p) => p.id !== id),
-        roles: { chat: clear(d.roles.chat), vision: clear(d.roles.vision), aux: clear(d.roles.aux), image: clear(d.roles.image) },
+        roles: { chat: clear(d.roles.chat), vision: clear(d.roles.vision), aux: clear(d.roles.aux), image: clear(d.roles.image), embedding: clear(d.roles.embedding) },
         personas: d.personas.map((p) => ({ ...p, provider: clear(p.provider) })),
       };
     });
@@ -220,8 +225,11 @@ function ModelsTab({
     try {
       // 只用来生图的模型不支持对话接口，测试时不能发聊天消息
       const r = draft.roles;
-      const imageOnly = r.image === p.id && ![r.chat, r.vision, r.aux].includes(p.id) && !draft.personas.some((x) => x.provider === p.id);
-      const reply = await api.providerTest(p, keys[p.id], imageOnly);
+      const chatUse = [r.chat, r.vision, r.aux].includes(p.id) || draft.personas.some((x) => x.provider === p.id);
+      const imageOnly = r.image === p.id && !chatUse;
+      // 只用来算向量的模型也不支持对话接口，直接算一条向量来验证
+      const embeddingOnly = r.embedding === p.id && !chatUse && r.image !== p.id;
+      const reply = await api.providerTest(p, keys[p.id], imageOnly, embeddingOnly);
       setTests((t) => ({ ...t, [p.id]: { ok: true, text: reply } }));
     } catch (e) {
       setTests((t) => ({ ...t, [p.id]: { ok: false, text: errorText(e) } }));
@@ -241,6 +249,8 @@ function ModelsTab({
           <ProviderSelect value={draft.roles.aux} providers={draft.providers} emptyLabel="（与主对话相同）" onChange={(v) => update((d) => ({ ...d, roles: { ...d.roles, aux: v } }))} />
           <label>生图（OpenAI 兼容的 /images/generations）</label>
           <ProviderSelect value={draft.roles.image} providers={draft.providers} emptyLabel="（不使用）" onChange={(v) => update((d) => ({ ...d, roles: { ...d.roles, image: v } }))} />
+          <label>向量（OpenAI 兼容的 /embeddings；配了就只把相关的记忆放进提示词）</label>
+          <ProviderSelect value={draft.roles.embedding} providers={draft.providers} emptyLabel="（不使用，记忆全部放进提示词）" onChange={(v) => update((d) => ({ ...d, roles: { ...d.roles, embedding: v } }))} />
         </div>
       </section>
 
@@ -810,7 +820,9 @@ function MemoryTab() {
   return (
     <div className="tab">
       <div className="section-head">
-        <p className="muted small">所有人格共享这些记忆。它们由辅助模型每隔几轮对话自动提取，每次对话都会全部放进提示词。</p>
+        <p className="muted small">
+          所有人格共享这些记忆，由辅助模型每隔几轮对话自动提取。核心记忆每次都放进提示词；事件记忆在「模型」页配了向量模型时只放和当前话题相关的几条，没配就全部放进去。
+        </p>
         <button onClick={() => setEdit({ id: null, kind: "core", content: "" })}>＋ 手动添加</button>
       </div>
       {err && <div className="error">{err}</div>}
@@ -1024,6 +1036,8 @@ function ParamsTab({ draft, update }: TabProps) {
         {field("context_tokens", "历史消息预算（token）", "超过后最早的一段会被总结成摘要", 2000, 200000)}
         {field("memory_extract_every", "记忆提取间隔（轮）", "每隔几轮用户消息提取一次长期记忆", 1, 50)}
         {field("memory_limit", "记忆条数上限", "超过后让辅助模型合并去重", 10, 500)}
+        {field("memory_limit_retrieval", "记忆条数上限（配了向量模型时）", "只挑相关的放进提示词，可以记得更多", 10, 2000)}
+        {field("memory_top_k", "每次带上的相关事件记忆", "配了向量模型时生效；另外总会带上最近的 3 条", 1, 50)}
         {field("file_chars", "单个文件最多注入字数", "超出部分截断，并告诉模型被截断了", 1000, 500000)}
         {field("bubble_chars", "气泡最多显示字数", "超出后提示展开看全文", 40, 2000)}
       </section>

@@ -4,7 +4,7 @@
 use crate::config::{Config, Persona, Provider};
 use crate::files::{self, AttachmentIn};
 use crate::llm::{self, ChatMessage, Endpoint, ImageUrl, Part};
-use crate::memory::{self, FullInjectRetriever, MemoryRetriever};
+use crate::memory;
 use crate::store::{AttachmentMeta, Message, StoredReasoning};
 use crate::{imagegen, tools, windows, AppState};
 use serde::{Deserialize, Serialize};
@@ -519,7 +519,8 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
     emit(&app, ChatEvent::User { persona: persona.id.clone(), message: user_msg });
 
     let history = state.store.unsummarized(&persona.id).map_err(|e| e.to_string())?;
-    let memory_block = memory::prompt_block(&FullInjectRetriever.retrieve(&state.store, &text));
+    let recall = memory::Recall::from_config(&cfg);
+    let memory_block = memory::prompt_block(&memory::recall(&state.store, recall.as_ref(), &memory::query_text(&history)).await);
     let summary = state.store.summary(&persona.id).map_err(|e| e.to_string())?;
     let mut messages = build_context(&persona, memory_block, summary, &history, provider.supports_vision, &now_label(), &provider.id);
 
@@ -745,8 +746,15 @@ async fn update_memories(app: &AppHandle, state: &AppState, cfg: &Config, person
         .store
         .recent(&persona.id, cfg.chat.memory_extract_every * 2 + 2)
         .map_err(|e| e.to_string())?;
-    memory::extract(&state.store, &ep, &recent, &persona.name, &today_label()).await?;
-    memory::consolidate(&state.store, &ep, cfg.chat.memory_limit).await?;
+    // 配了向量模型时只给辅助模型看和这段对话相关的旧记忆，记忆多了也不会撑爆提示词
+    let recall = memory::Recall::from_config(cfg);
+    let topic: String = recent.iter().map(|m| m.display.chars().take(200).collect::<String>()).collect::<Vec<_>>().join("\n");
+    let existing = memory::recall_for_extract(&state.store, recall.as_ref(), &topic).await;
+    memory::extract(&state.store, &ep, &existing, &recent, &persona.name, &today_label()).await?;
+    memory::consolidate(&state.store, &ep, memory::memory_limit(cfg)).await?;
+    if let Some(r) = &recall {
+        memory::backfill(&state.store, r).await?;
+    }
     let _ = app.emit("memories-changed", ());
     Ok(())
 }

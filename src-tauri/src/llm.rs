@@ -352,6 +352,45 @@ pub async fn chat_once(ep: &Endpoint, messages: &[ChatMessage], temperature: Opt
         .ok_or_else(|| "响应里没有 choices[0].message.content".into())
 }
 
+/// OpenAI 兼容的 /embeddings：每条文本一个向量，顺序和输入一致
+pub async fn embed(ep: &Endpoint, inputs: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let resp = ep
+        .post(&http(), "/embeddings")
+        .timeout(Duration::from_secs(30))
+        .json(&serde_json::json!({ "model": ep.model, "input": inputs }))
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(error_text(resp).await);
+    }
+    let v: Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
+    parse_embeddings(&v, inputs.len())
+}
+
+fn parse_embeddings(v: &Value, n: usize) -> Result<Vec<Vec<f32>>, String> {
+    let data = v.get("data").and_then(Value::as_array).ok_or("响应里没有 data")?;
+    let mut out: Vec<Option<Vec<f32>>> = vec![None; n];
+    for (i, item) in data.iter().enumerate() {
+        // 按 index 放回原位，没有 index 就按顺序
+        let idx = item.get("index").and_then(Value::as_u64).map(|x| x as usize).unwrap_or(i);
+        let vec: Vec<f32> = item
+            .get("embedding")
+            .and_then(Value::as_array)
+            .ok_or("响应里的 embedding 不是数组")?
+            .iter()
+            .filter_map(|x| x.as_f64().map(|f| f as f32))
+            .collect();
+        if idx < n && !vec.is_empty() {
+            out[idx] = Some(vec);
+        }
+    }
+    out.into_iter().collect::<Option<Vec<_>>>().ok_or_else(|| "返回的向量条数不对".into())
+}
+
 /// 设置页的"测试连接"。先查 /models（不花钱，能验证地址和 Key，顺便核对模型名）；
 /// 服务不提供这个接口时，对话模型退回发一条极短的消息，生图模型就只能实际画一张才能验证。
 pub async fn test_connection(ep: &Endpoint, chat_capable: bool) -> Result<String, String> {
@@ -465,5 +504,16 @@ mod tests {
     fn token_estimate_is_reasonable() {
         assert!(estimate_tokens("你好世界") >= 4);
         assert!(estimate_tokens(&"a".repeat(400)) < 120);
+    }
+
+    #[test]
+    fn embeddings_follow_index() {
+        let v = serde_json::json!({ "data": [
+            { "index": 1, "embedding": [0.5, 0.25] },
+            { "index": 0, "embedding": [1.0, 2.0] }
+        ]});
+        assert_eq!(parse_embeddings(&v, 2).unwrap(), vec![vec![1.0, 2.0], vec![0.5, 0.25]]);
+        assert!(parse_embeddings(&v, 3).is_err());
+        assert!(parse_embeddings(&serde_json::json!({}), 1).is_err());
     }
 }

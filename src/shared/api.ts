@@ -26,6 +26,8 @@ export interface Roles {
   vision: string | null;
   aux: string | null;
   image: string | null;
+  /** 向量模型（/embeddings），配了就按相关度挑事件记忆 */
+  embedding: string | null;
 }
 
 export interface DialogPair {
@@ -47,6 +49,8 @@ export interface ChatParams {
   context_tokens: number;
   memory_extract_every: number;
   memory_limit: number;
+  memory_limit_retrieval: number;
+  memory_top_k: number;
   file_chars: number;
   bubble_chars: number;
 }
@@ -268,7 +272,8 @@ export const api = {
     proactive: ProactiveParams;
   }) => invoke<void>("settings_save", { settings }),
   providerSetKey: (id: string, key: string) => invoke<void>("provider_set_key", { id, key }),
-  providerTest: (provider: Provider, key?: string, imageOnly?: boolean) => invoke<string>("provider_test", { provider, key, imageOnly }),
+  providerTest: (provider: Provider, key?: string, imageOnly?: boolean, embeddingOnly?: boolean) =>
+    invoke<string>("provider_test", { provider, key, imageOnly, embeddingOnly }),
   personaActivate: (id: string) => invoke<void>("persona_activate", { id }),
   chatHistory: (before?: number, limit?: number) =>
     invoke<{ persona: string; personaName: string; messages: Message[] }>("chat_history", { before, limit }),

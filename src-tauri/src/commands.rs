@@ -171,10 +171,19 @@ pub fn provider_set_key(id: String, key: String) -> Result<(), String> {
 
 /// 用设置页里还没保存的值测试；key 为空时用已保存的。image_only：这个模型只用来生图
 #[tauri::command]
-pub async fn provider_test(provider: Provider, key: Option<String>, image_only: Option<bool>) -> Result<String, String> {
+pub async fn provider_test(
+    provider: Provider,
+    key: Option<String>,
+    image_only: Option<bool>,
+    embedding_only: Option<bool>,
+) -> Result<String, String> {
     let mut ep = Endpoint::from_provider(&provider);
     if let Some(k) = key.filter(|k| !k.trim().is_empty()) {
         ep.api_key = Some(k.trim().to_string());
+    }
+    if embedding_only.unwrap_or(false) {
+        let v = llm::embed(&ep, &["测试".to_string()]).await?;
+        return Ok(format!("连接成功，向量维度 {}", v.first().map_or(0, Vec::len)));
     }
     llm::test_connection(&ep, !image_only.unwrap_or(false)).await
 }
