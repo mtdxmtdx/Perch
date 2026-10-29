@@ -98,6 +98,33 @@ pub struct ProactiveParams {
     pub daily: Vec<DailyReminder>,
     /// agent 等你授权超过 5 分钟还没处理时，再提一次
     pub agent_follow_up: bool,
+    /// 按前台程序切换模式：写代码时只说重要的和鼓励，全屏、开会、直播时什么都不说
+    pub desktop_modes: bool,
+    /// 算"专注"的程序（进程名，不带 .exe，不分大小写）；agent 在干活时也算专注
+    pub focus_apps: Vec<String>,
+    /// 算"静默"的程序（开会、直播录屏）；全屏程序总是算静默
+    pub silent_apps: Vec<String>,
+    /// 专注这么多分钟后说句鼓励；为空不启用
+    pub encourage_minutes: Option<u64>,
+    /// 离开电脑这么多分钟后回来时打招呼（每天早上第一次见面问早安）；为空不启用
+    pub welcome_back_minutes: Option<u64>,
+    /// 节日问候（元旦、春节、中秋等公历和农历节日）
+    pub holidays: bool,
+    /// 用户生日 "MM-DD"，当天送上祝福；为空不设
+    pub birthday: Option<String>,
+    /// 纪念日，当天提一句
+    pub anniversaries: Vec<Anniversary>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Anniversary {
+    /// "MM-DD"
+    pub date: String,
+    pub label: String,
+}
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
 }
 
 impl Default for ProactiveParams {
@@ -113,6 +140,18 @@ impl Default for ProactiveParams {
             bedtime: None,
             daily: Vec::new(),
             agent_follow_up: true,
+            desktop_modes: true,
+            focus_apps: names(&[
+                "code", "cursor", "windsurf", "trae", "zed", "devenv", "idea64", "pycharm64", "webstorm64", "clion64",
+                "goland64", "rider64", "rustrover64", "studio64", "sublime_text", "notepad++", "windowsterminal",
+                "nvim-qt",
+            ]),
+            silent_apps: names(&["ms-teams", "teams", "zoom", "wemeetapp", "voovmeetingapp", "obs64", "streamlabs obs"]),
+            encourage_minutes: Some(90),
+            welcome_back_minutes: Some(60),
+            holidays: true,
+            birthday: None,
+            anniversaries: Vec::new(),
         }
     }
 }

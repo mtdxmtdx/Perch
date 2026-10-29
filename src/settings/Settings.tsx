@@ -881,6 +881,9 @@ function CompanionTab({ draft, update }: TabProps) {
   );
   const setDaily = (i: number, patch: Partial<{ at: string; label: string }>) =>
     set({ daily: p.daily.map((d, j) => (j === i ? { ...d, ...patch } : d)) });
+  const setAnniv = (i: number, patch: Partial<{ date: string; label: string }>) =>
+    set({ anniversaries: p.anniversaries.map((d, j) => (j === i ? { ...d, ...patch } : d)) });
+  const mdBad = (s: string | null) => !!s && !/^\s*\d{1,2}-\d{1,2}\s*$/.test(s);
 
   return (
     <div className="tab">
@@ -892,7 +895,7 @@ function CompanionTab({ draft, update }: TabProps) {
           </label>
         </div>
         <p className="muted small">
-          全屏、对话进行中、录音时、气泡开着时不会开口；工作模式和免打扰时段只说重要的提醒（每日提醒、就寝、久坐、agent 等你授权），不闲聊。主动说的话会记进当前人格的对话，你可以直接接着回。
+          全屏、开会、对话进行中、录音时、气泡开着时不会开口；写代码时和工作模式、免打扰时段只说重要的提醒（每日提醒、就寝、久坐、agent 等你授权、节日和生日），不闲聊。主动说的话会记进当前人格的对话，你可以直接接着回。
         </p>
         <div className="checks" style={{ marginTop: 6 }}>
           <label>
@@ -937,6 +940,47 @@ function CompanionTab({ draft, update }: TabProps) {
             </label>
           </div>
           <label>
+            离开后回来时打招呼（分钟）
+            <div className="small muted">离开电脑这么久（包括电脑睡眠）再回来时说句欢迎回来；每天早上第一次见面问早安；0 为关闭</div>
+          </label>
+          {minutesField(p.welcome_back_minutes, (v) => set({ welcome_back_minutes: v }))}
+          <label>
+            专注时鼓励（分钟）
+            <div className="small muted">写代码（或者 agent 在干活）连续这么久，说句打气的话；0 为关闭</div>
+          </label>
+          {minutesField(p.encourage_minutes, (v) => set({ encourage_minutes: v }))}
+          <label>
+            节日问候
+            <div className="small muted">元旦、春节、元宵、端午、七夕、中秋、国庆、圣诞等当天问候一次</div>
+          </label>
+          <div className="checks">
+            <label>
+              <input type="checkbox" checked={p.holidays} onChange={(e) => set({ holidays: e.target.checked })} /> 开启
+            </label>
+          </div>
+          <label>
+            我的生日
+            <div className="small muted">月-日，比如 03-08；当天送上祝福</div>
+          </label>
+          <div className="reasoning-row" style={{ gridTemplateColumns: "120px auto" }}>
+            <input value={p.birthday ?? ""} placeholder="MM-DD" onChange={(e) => set({ birthday: e.target.value.trim() || null })} />
+            {mdBad(p.birthday) && <span className="small" style={{ color: "var(--danger)" }}>格式是 月-日</span>}
+          </div>
+          <label>
+            纪念日
+            <div className="small muted">每年这一天提一句</div>
+          </label>
+          <div>
+            {p.anniversaries.map((d, i) => (
+              <div key={i} className="reasoning-row" style={{ gridTemplateColumns: "120px 1fr auto", marginBottom: 6 }}>
+                <input value={d.date} placeholder="MM-DD" onChange={(e) => setAnniv(i, { date: e.target.value })} />
+                <input value={d.label} placeholder="什么日子，比如：和栖栖认识的那天" onChange={(e) => setAnniv(i, { label: e.target.value })} />
+                <button onClick={() => set({ anniversaries: p.anniversaries.filter((_, j) => j !== i) })}>删除</button>
+              </div>
+            ))}
+            <button onClick={() => set({ anniversaries: [...p.anniversaries, { date: "", label: "" }] })}>添加纪念日</button>
+          </div>
+          <label>
             每日提醒
             <div className="small muted">每天到点提醒一次（到点后 30 分钟内，等到可以开口时说）</div>
           </label>
@@ -973,10 +1017,43 @@ function CompanionTab({ draft, update }: TabProps) {
             <div className="small muted">重要的提醒不受这个限制</div>
           </label>
           <input type="number" min={5} max={1440} value={p.min_interval_minutes} onChange={(e) => set({ min_interval_minutes: Math.max(5, Number(e.target.value) || 5) })} />
+          <label>
+            看我在用什么程序
+            <div className="small muted">按前台程序判断：写代码时（或者 agent 在干活）只说重要的和鼓励；全屏、开会、直播时什么都不说</div>
+          </label>
+          <div className="checks">
+            <label>
+              <input type="checkbox" checked={p.desktop_modes} onChange={(e) => set({ desktop_modes: e.target.checked })} /> 开启
+            </label>
+          </div>
+          <label>
+            算"写代码"的程序
+            <div className="small muted">进程名，不带 .exe，用逗号或换行分开</div>
+          </label>
+          <ListInput value={p.focus_apps} disabled={!p.desktop_modes} onChange={(v) => set({ focus_apps: v })} />
+          <label>
+            算"别出声"的程序
+            <div className="small muted">开会、直播录屏等；全屏程序不用加，总是算</div>
+          </label>
+          <ListInput value={p.silent_apps} disabled={!p.desktop_modes} onChange={(v) => set({ silent_apps: v })} />
         </div>
       </section>
     </div>
   );
+}
+
+/** 用逗号或换行分开的名字列表；失去焦点时才拆分，免得打逗号时被吞掉 */
+function ListInput({ value, disabled, onChange }: { value: string[]; disabled?: boolean; onChange: (v: string[]) => void }) {
+  const [text, setText] = useState(value.join(", "));
+  useEffect(() => setText(value.join(", ")), [value]);
+  const commit = () =>
+    onChange(
+      text
+        .split(/[,，\n]/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+  return <textarea rows={3} value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onBlur={commit} />;
 }
 
 /** 常规：开机自启动（直接写注册表，立即生效，不用点保存） */

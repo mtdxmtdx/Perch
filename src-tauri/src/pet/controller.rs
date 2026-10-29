@@ -57,6 +57,8 @@ struct Ctl {
     press: Option<(i32, i32)>,
     snap: Snapshot,
     fs_hidden: bool,
+    /// 桌宠所在显示器上有没有全屏程序（不管设置里要不要因此隐藏，主动聊天也要用）
+    fs_now: bool,
     last_fs_check: Instant,
     shown: bool,
     anim: &'static str,
@@ -108,6 +110,7 @@ impl Ctl {
             press: None,
             snap: surfaces::snapshot(pid, 156),
             fs_hidden: false,
+            fs_now: false,
             last_fs_check: Instant::now(),
             shown: false,
             anim: "",
@@ -359,16 +362,15 @@ impl Ctl {
             }
         }
 
-        if !hide_fs {
-            self.fs_hidden = false;
-        } else if now - self.last_fs_check >= FULLSCREEN_EVERY {
+        if now - self.last_fs_check >= FULLSCREEN_EVERY {
             self.last_fs_check = now;
             let fs = fullscreen::is_fullscreen_at(self.cx as i32, self.fy as i32 - 1, self.pid);
-            if self.debug && fs != self.fs_hidden {
+            if self.debug && fs != self.fs_now {
                 eprintln!("[pet] fullscreen={fs} pet_mon={:x} {}", win::monitor_at_point(self.cx as i32, self.fy as i32 - 1), fullscreen::describe_foreground());
             }
-            self.fs_hidden = fs;
+            self.fs_now = fs;
         }
+        self.fs_hidden = hide_fs && self.fs_now;
         // 只在启动时 show 一次；之后的隐藏是把窗口挪到屏幕外。
         // tao 之后的 show() 用的是 SW_SHOW，会把焦点从刚退出全屏的游戏那里抢走。
         if !self.shown {
@@ -384,7 +386,11 @@ impl Ctl {
             }
         }
         let hidden = user_hidden || self.fs_hidden;
-        self.shared.lock().unwrap().pet_hidden = hidden;
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.pet_hidden = hidden;
+            s.fullscreen = self.fs_now;
+        }
         if hidden {
             self.press = None;
             if bubble.is_some() {

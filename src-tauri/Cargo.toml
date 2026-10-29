@@ -33,6 +33,7 @@ tauri-plugin-dialog = "2"
 pdf-extract = "0.12.1"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+chinese-lunisolar-calendar = "0.2.5"
 similar = "3.2.0"
 encoding_rs = "0.8.42"
 # 版本钉死：运行时下载的 DLL（voice/runtime.rs）要和这里的 C 接口对得上
