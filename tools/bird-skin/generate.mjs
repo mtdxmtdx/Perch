@@ -10,11 +10,12 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const outDir = resolve(process.argv[2] ?? join(here, "../../src-tauri/resources/skins/perch-bird"));
 
-// 图集：8 列 × 11 行（v2），每格 192×208；脚底基线在格子里的 y=196，水平中心 x=96
+// 图集：8 列 × 12 行，每格 192×208；脚底基线在格子里的 y=196，水平中心 x=96。
+// 前 11 行是 Codex v2 的布局，第 12 行（坐）是 Perch 的扩展，靠 skin.json 的 rows: 12 声明
 const CW = 192;
 const CH = 208;
 const COLS = 8;
-const ROWS = 11;
+const ROWS = 12;
 const BASE_Y = 196;
 
 // 配色（取自图标）
@@ -56,6 +57,7 @@ function bird(p = {}) {
     puff: 0, // 0 正常 ~ 1 羽毛炸开
     feet: 1, // 0 收起（空中）~ 1 站立
     tuck: 0, // 0 正常 ~ 1 把头埋起来睡觉
+    tailDroop: 0, // 尾巴往下垂的角度（度）：坐在窗沿上时尾巴搭在边沿外
     ...p,
   };
   const puffS = 1 + q.puff * 0.2;
@@ -80,9 +82,10 @@ function bird(p = {}) {
     parts.push(`<path d="M -6 ${cy + bodyRy - 4} q 4 6 9 0 M 9 ${cy + bodyRy - 4} q 4 6 9 0" fill="none" stroke="${C.line}" stroke-width="${LW}" stroke-linecap="round"/>`);
   }
 
-  // 尾巴
+  // 尾巴：下垂时绕尾巴根部转下去，并稍微缩短，免得尾巴尖超出格子
+  const tailTf = q.tailDroop ? `rotate(${r1(-q.tailDroop)} -27 ${cy + 22}) translate(-27 ${cy + 22}) scale(0.85) translate(27 ${-(cy + 22)})` : "";
   parts.push(
-    `<path d="M -26 ${cy + 12} Q -58 ${cy + 16} -88 ${cy + 34} Q -58 ${cy + 40} -28 ${cy + 34} Z" fill="${C.tail}" stroke="${C.line}" stroke-width="${LW}" stroke-linejoin="round"/>`,
+    `<path transform="${tailTf}" d="M -26 ${cy + 12} Q -58 ${cy + 16} -88 ${cy + 34} Q -58 ${cy + 40} -28 ${cy + 34} Z" fill="${C.tail}" stroke="${C.line}" stroke-width="${LW}" stroke-linejoin="round"/>`,
   );
 
   // 头冠（在身体后面，根部藏进头里）
@@ -326,6 +329,19 @@ const rows = [
   }),
   // 10 在听你说话：微微歪头，声波一圈圈出现
   [0, 1, 2, 3, 4, 5].map((i) => bird({ tilt: -5, crest: 0.4, eye: i === 3 ? "half" : "open" }) + waves(54, -76, [1, 2, 3, 1, 2, 3][i])),
+  // 11 坐在窗沿上：肚子贴着边沿（基线），脚收起来，尾巴搭在边沿外轻轻晃，偶尔眨眼、歪头
+  [0, 1, 2, 3, 4, 5].map((i) =>
+    bird({
+      dy: 13,
+      feet: 0,
+      sx: 1.06,
+      sy: [0.9, 0.895, 0.9, 0.9, 0.905, 0.9][i],
+      tailDroop: [8, 10, 12, 12, 10, 8][i],
+      wing: -4,
+      eye: ["open", "open", "half", "closed", "open", "open"][i],
+      tilt: [0, 0, 0, 0, -6, -4][i],
+    }),
+  ),
 ];
 rows[2] = rows[1].map((f) => `<g transform="scale(-1 1)">${f}</g>`);
 
@@ -358,14 +374,16 @@ writeFileSync(
     2,
   ) + "\n",
 );
-// 第 9、10 行是自己加的：睡觉、听你说话
+// 第 9～11 行是自己加的：睡觉、听你说话、坐在窗沿上（rows: 12 是 Perch 的扩展，声明图集有 12 行）
 writeFileSync(
   join(outDir, "skin.json"),
   JSON.stringify(
     {
+      rows: 12,
       animations: {
         sleep: { row: 9, frames: [0, 1, 2, 3, 4, 5], durations: [520, 480, 600, 600, 480, 520], loop: true },
         listen: { row: 10, frames: [0, 1, 2, 3, 4, 5], durations: [200, 200, 260, 200, 200, 260], loop: true },
+        sit: { row: 11, frames: [0, 1, 2, 3, 4, 5], durations: [900, 900, 110, 110, 1100, 900], loop: true },
       },
     },
     null,

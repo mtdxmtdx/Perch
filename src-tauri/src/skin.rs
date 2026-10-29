@@ -163,13 +163,17 @@ mod tests {
         assert_eq!(e.name, "栖栖");
         let info = load_info(&e).unwrap();
         assert_eq!(info.pet["spriteVersionNumber"], 2);
-        assert_eq!(info.overrides.unwrap()["animations"]["sleep"]["row"], 9);
+        let overrides = info.overrides.unwrap();
+        assert_eq!(overrides["animations"]["sleep"]["row"], 9);
+        // 第 12 行是"坐在窗沿上"，用 Perch 的 rows 扩展声明
+        assert_eq!(overrides["rows"], 12);
+        assert_eq!(overrides["animations"]["sit"]["row"], 11);
         let png = image_bytes(&e).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-        // 图集是 8×11 格、每格 192×208
+        // 图集是 8×12 格、每格 192×208
         let w = u32::from_be_bytes(png[16..20].try_into().unwrap());
         let h = u32::from_be_bytes(png[20..24].try_into().unwrap());
-        assert_eq!((w, h), (192 * 8, 208 * 11));
+        assert_eq!((w, h), (192 * 8, 208 * 12));
         // 老用户迁移时不会选到内置的
         assert!(legacy_default().is_none_or(|l| l.id != BUILTIN_ID));
     }

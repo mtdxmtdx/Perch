@@ -45,6 +45,9 @@ struct SkinMetrics {
     foot_ratio: f64,
     center_ratio: f64,
     top_ratio: f64,
+    /// 皮肤定义了"坐"的动画
+    #[serde(default)]
+    can_sit: bool,
 }
 
 fn current_skin(state: &AppState) -> Option<skin::SkinEntry> {
@@ -76,6 +79,7 @@ fn set_skin_metrics(app: AppHandle, state: State<AppState>, metrics: SkinMetrics
             top_ratio: metrics.top_ratio.clamp(0.0, 0.9),
         };
         s.masks = Masks { w: metrics.mask_w, h: metrics.mask_h, frames: metrics.masks };
+        s.can_sit = metrics.can_sit;
         s.frame = 0;
         s.ready = true;
         s.bubble_moved = true;

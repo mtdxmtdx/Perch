@@ -17,6 +17,8 @@ export interface SkinMetrics {
   centerRatio: number;
   /** 头顶位置，气泡贴着它放 */
   topRatio: number;
+  /** 皮肤有"坐"的动画 */
+  canSit: boolean;
 }
 
 export function computeMetrics(skin: LoadedSkin): SkinMetrics {
@@ -86,5 +88,6 @@ export function computeMetrics(skin: LoadedSkin): SkinMetrics {
     footRatio: maxY >= 0 ? (maxY + 1) / ch : 1,
     centerRatio: maxX >= 0 ? (minX + maxX + 1) / 2 / cw : 0.5,
     topRatio: maxY >= 0 ? minY / ch : 0,
+    canSit: skin.canSit,
   };
 }
