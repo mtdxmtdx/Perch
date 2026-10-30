@@ -7,6 +7,7 @@ import { fromPaste, fromPaths, pickFiles, useAttachments } from "../shared/attac
 import { ToolLines } from "../shared/ToolLines";
 import { ApprovalDialog } from "../chat/ApprovalDialog";
 import { AgentOffer } from "./AgentOffer";
+import { ModelSetup } from "./ModelSetup";
 import { useVoice } from "../shared/useVoice";
 import "./bubble.css";
 
@@ -64,6 +65,13 @@ export function Bubble() {
     offerPending.current = p;
     setOfferOpen(p);
   }, []);
+  // 新用户引导（接模型）还没回答时也不收起；它在的时候先不问 agent 接入
+  const setupPending = useRef(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const onSetupPending = useCallback((p: boolean) => {
+    setupPending.current = p;
+    setSetupOpen(p);
+  }, []);
 
   useEffect(() => {
     void api.settingsGet().then((s) => setMaxChars(s.chat.bubble_chars));
@@ -82,7 +90,7 @@ export function Bubble() {
       listen<string[]>("bubble-attach", (e) => atts.add(fromPaths(e.payload))),
       listen("settings-changed", () => void api.settingsGet().then((s) => setMaxChars(s.chat.bubble_chars))),
       getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-        if (!focused && !suppressBlur.current && !approvalPending.current && !offerPending.current) void api.bubbleClose();
+        if (!focused && !suppressBlur.current && !approvalPending.current && !offerPending.current && !setupPending.current) void api.bubbleClose();
       }),
     ]);
     return () => void subs.then((fns) => fns.forEach((f) => f()));
@@ -119,10 +127,10 @@ export function Bubble() {
 
   // 说话模式：8 秒后自动收起，鼠标停在气泡上或接入询问还没回答时不收
   useEffect(() => {
-    if (mode !== "speak" || !said || hover || offerOpen) return;
+    if (mode !== "speak" || !said || hover || offerOpen || setupOpen) return;
     const t = setTimeout(() => void api.bubbleClose(), 8000);
     return () => clearTimeout(t);
-  }, [mode, said, hover, offerOpen]);
+  }, [mode, said, hover, offerOpen, setupOpen]);
 
   const submit = async () => {
     if (chat.busy || (!text.trim() && atts.items.length === 0)) return;
@@ -187,8 +195,10 @@ export function Bubble() {
           </div>
         )}
         <ApprovalDialog inline onPendingChange={onPendingChange} />
-        <AgentOffer onPendingChange={onOfferPending} onFinished={setSaid} />
-        {chat.error && <div className="error">{chat.error}</div>}
+        <ModelSetup onPendingChange={onSetupPending} onFinished={setSaid} />
+        {!setupOpen && <AgentOffer onPendingChange={onOfferPending} onFinished={setSaid} />}
+        {/* 没配模型的报错由引导卡片代替 */}
+        {chat.error && !setupOpen && <div className="error">{chat.error}</div>}
         {voice.state === "recording" && (
           <div className="voice-status">
             <span className="dot" />

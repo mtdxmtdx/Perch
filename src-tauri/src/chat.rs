@@ -1,7 +1,7 @@
 //! 对话流程：处理附件 → 拼上下文 → 流式回复 → 后台维护（滚动总结、长期记忆）。
 //! 通过 "chat-event" 事件把过程广播给气泡窗口和聊天窗口。
 
-use crate::config::{Config, Persona, Provider};
+use crate::config::{Config, Persona};
 use crate::files::{self, AttachmentIn};
 use crate::llm::{self, ChatMessage, Endpoint, ImageUrl, Part};
 use crate::memory;
@@ -496,10 +496,11 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
     if let Some(prompt) = text.trim().strip_prefix("/draw") {
         return draw(&app, &cfg, &persona, &text, prompt.trim()).await;
     }
-    let provider: Provider = cfg
-        .chat_provider(&persona)
-        .cloned()
-        .ok_or("还没有配置对话模型，请先在设置里添加模型并选为\"主对话\"")?;
+    let Some(provider) = cfg.chat_provider(&persona).cloned() else {
+        // 在气泡里弹出接模型的卡片
+        crate::onboarding::request(&app, "input");
+        return Err("还没有配置对话模型：在气泡里选一家服务商、填上 API Key 就能聊了（也可以在 设置 → 模型 里添加）".into());
+    };
 
     let mut metas = Vec::new();
     let mut blocks = Vec::new();

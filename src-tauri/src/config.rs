@@ -9,6 +9,8 @@ pub struct Config {
     pub skin: Option<String>,
     /// 已做过"内置栖栖"上线时的迁移（老用户保留原来看到的皮肤）
     pub builtin_skin_migrated: bool,
+    /// 已经问过要不要接对话模型（新用户引导），回答过就不再主动问
+    pub model_onboarded: bool,
     /// 相对一格精灵（Codex 为 192×208）的缩放比例
     pub scale: f64,
     pub work_mode: bool,
@@ -361,6 +363,7 @@ impl Default for Config {
         Self {
             skin: None,
             builtin_skin_migrated: false,
+            model_onboarded: false,
             scale: 0.75,
             work_mode: false,
             hide_on_fullscreen: true,

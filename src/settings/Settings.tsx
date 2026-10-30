@@ -23,6 +23,7 @@ import {
   type RelationView,
 } from "../shared/api";
 import { SessionList, useSessions } from "../shared/Sessions";
+import { PRESETS, providerFrom } from "../shared/presets";
 import "./settings.css";
 
 interface Draft {
@@ -40,18 +41,6 @@ interface Draft {
 
 const newId = () => crypto.randomUUID().slice(0, 8);
 
-// 模型名只是示例，以厂商文档为准
-const PRESETS: { label: string; base_url: string; model: string; style: string; vision?: boolean; embedding?: boolean }[] = [
-  { label: "DeepSeek", base_url: "https://api.deepseek.com/v1", model: "deepseek-flash", style: "deepseek", vision: true },
-  { label: "通义千问（阿里云百炼）", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus", style: "qwen" },
-  { label: "硅基流动", base_url: "https://api.siliconflow.cn/v1", model: "deepseek-ai/DeepSeek-V3", style: "openai" },
-  { label: "OpenRouter", base_url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o-mini", style: "openrouter" },
-  { label: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4o-mini", style: "openai" },
-  { label: "向量模型：硅基流动 bge-m3", base_url: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3", style: "openai", embedding: true },
-  { label: "向量模型：通义 text-embedding-v4", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v4", style: "openai", embedding: true },
-  { label: "向量模型：OpenAI text-embedding-3-small", base_url: "https://api.openai.com/v1", model: "text-embedding-3-small", style: "openai", embedding: true },
-  { label: "自定义", base_url: "https://", model: "", style: "openai" },
-];
 
 const EFFORTS: [string, string][] = [
   ["", "不设置（默认）"],
@@ -205,7 +194,7 @@ function ModelsTab({
 
   const add = (presetIdx: number) => {
     const pr = PRESETS[presetIdx];
-    const p: Provider = { id: newId(), name: pr.label, base_url: pr.base_url, model: pr.model, supports_vision: !!pr.vision, supports_tools: true, reasoning_effort: "", reasoning_style: pr.style };
+    const p: Provider = providerFrom(pr, newId());
     // 向量模型填进"向量"用途（还没选的话），对话模型填进"主对话"
     const role = pr.embedding ? "embedding" : "chat";
     update((d) => ({ ...d, providers: [...d.providers, p], roles: d.roles[role] ? d.roles : { ...d.roles, [role]: p.id } }));

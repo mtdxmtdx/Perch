@@ -53,10 +53,18 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let h = std::thread::spawn(move || {
             let (mut c, _) = listener.accept().unwrap();
+            // 请求头和请求体是分两次写的，一次 read 可能只读到头：读到请求体为止
+            let mut req = Vec::new();
             let mut buf = vec![0u8; 4096];
-            let n = c.read(&mut buf).unwrap();
+            loop {
+                let n = c.read(&mut buf).unwrap();
+                req.extend_from_slice(&buf[..n]);
+                if n == 0 || req.ends_with(b"}") {
+                    break;
+                }
+            }
             let _ = c.write_all(b"HTTP/1.1 204 No Content\r\n\r\n");
-            String::from_utf8_lossy(&buf[..n]).to_string()
+            String::from_utf8_lossy(&req).to_string()
         });
         post(port, "codex", "tok", br#"{"hook_event_name":"Stop"}"#).unwrap();
         let req = h.join().unwrap();
