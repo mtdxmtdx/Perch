@@ -250,7 +250,7 @@ export function ChatWindow() {
           <textarea
             value={text}
             rows={2}
-            placeholder="Enter 发送，Shift+Enter 换行；可以粘贴图片、拖入文件；/draw 描述 直接画图"
+            placeholder="Enter 发送，Shift+Enter 换行；可以粘贴图片、拖入文件；/draw 描述 直接画图；@帮助 看聊天命令"
             onChange={(e) => setText(e.target.value)}
             onPaste={async (e) => {
               const imgs = await fromPaste(e);

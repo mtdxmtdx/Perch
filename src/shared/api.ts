@@ -53,6 +53,22 @@ export interface ChatParams {
   memory_top_k: number;
   file_chars: number;
   bubble_chars: number;
+  /** 关系数值（好感、信任、熟悉、心情） */
+  relationship: boolean;
+}
+
+export interface RelationValues {
+  affection: number;
+  trust: number;
+  familiarity: number;
+  mood: number;
+}
+
+export interface RelationView extends RelationValues {
+  persona: string;
+  personaName: string;
+  /** 给模型看的文字描述 */
+  note: string;
 }
 
 export interface ToolParams {
@@ -294,6 +310,8 @@ export const api = {
   memoryList: () => invoke<Memory[]>("memory_list"),
   memorySave: (id: number | null, kind: string, content: string) => invoke<void>("memory_save", { id, kind, content }),
   memoryDelete: (id: number) => invoke<void>("memory_delete", { id }),
+  relationGet: () => invoke<RelationView>("relation_get"),
+  relationSet: (v: RelationValues, reset = false) => invoke<void>("relation_set", { ...v, reset }),
   bubbleOpen: (mode: "input" | "speak") => invoke<void>("bubble_open", { mode }),
   bubbleClose: () => invoke<void>("bubble_close"),
   bubbleResize: (width: number, height: number) => invoke<void>("bubble_resize", { width, height }),

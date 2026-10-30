@@ -19,6 +19,8 @@ import {
   type ProactiveParams,
   type AgentsOverview,
   type AgentId,
+  type RelationValues,
+  type RelationView,
 } from "../shared/api";
 import { SessionList, useSessions } from "../shared/Sessions";
 import "./settings.css";
@@ -823,9 +825,12 @@ function MemoryTab() {
         <p className="muted small">
           所有人格共享这些记忆，由辅助模型每隔几轮对话自动提取。核心记忆每次都放进提示词；事件记忆在「模型」页配了向量模型时只放和当前话题相关的几条，没配就全部放进去。
         </p>
-        <button onClick={() => setEdit({ id: null, kind: "core", content: "" })}>＋ 手动添加</button>
+        <button style={{ whiteSpace: "nowrap", flexShrink: 0 }} onClick={() => setEdit({ id: null, kind: "core", content: "" })}>
+          ＋ 手动添加
+        </button>
       </div>
       {err && <div className="error">{err}</div>}
+      <RelationPanel />
       {edit && edit.id === null && <MemoryEditor edit={edit} setEdit={setEdit} save={save} />}
       {groups.map(([kind, title]) => (
         <section key={kind}>
@@ -852,6 +857,70 @@ function MemoryTab() {
         </section>
       ))}
     </div>
+  );
+}
+
+const RELATION_FIELDS: [keyof RelationValues, string][] = [
+  ["affection", "好感度"],
+  ["trust", "信任度"],
+  ["familiarity", "熟悉度"],
+  ["mood", "心情"],
+];
+
+/** 和当前人格的关系：可以直接拖动调整，改完点保存 */
+function RelationPanel() {
+  const [view, setView] = useState<RelationView | null>(null);
+  const [vals, setVals] = useState<RelationValues | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const load = () =>
+    void api.relationGet().then((v) => {
+      setView(v);
+      setVals({ affection: v.affection, trust: v.trust, familiarity: v.familiarity, mood: v.mood });
+    });
+
+  useEffect(() => {
+    load();
+    const uns = [listen("relation-changed", load), listen("settings-changed", load)];
+    return () => uns.forEach((u) => void u.then((f) => f()));
+  }, []);
+
+  if (!view || !vals) return null;
+  const dirty = RELATION_FIELDS.some(([k]) => Math.round(vals[k]) !== Math.round(view[k]));
+  const save = async (reset = false) => {
+    try {
+      await api.relationSet(vals, reset);
+      setErr(null);
+      load();
+    } catch (e) {
+      setErr(errorText(e));
+    }
+  };
+
+  return (
+    <section>
+      <h3>和「{view.personaName}」的关系</h3>
+      <div className="grid2 params">
+        {RELATION_FIELDS.map(([k, label]) => (
+          <div key={k} style={{ display: "contents" }}>
+            <label>{label}</label>
+            <div className="reasoning-row" style={{ gridTemplateColumns: "1fr 40px" }}>
+              <input type="range" min={0} max={100} value={Math.round(vals[k])} onChange={(e) => setVals({ ...vals, [k]: Number(e.target.value) })} />
+              <span>{Math.round(vals[k])}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="muted small">
+        模型看到的是文字描述：{view.note}。心情过几个小时会慢慢回到平常。每个人格各有一份；聊天里也可以输入 <code>@状态</code>、<code>@好感度 80</code>、<code>@记住 …</code>、<code>@忘记 …</code>，输入 <code>@帮助</code> 看全部命令。
+      </p>
+      <div className="section-head" style={{ justifyContent: "flex-start", gap: 8 }}>
+        <button disabled={!dirty} onClick={() => void save()}>
+          保存
+        </button>
+        <button onClick={() => void save(true)}>恢复默认</button>
+      </div>
+      {err && <div className="error">{err}</div>}
+    </section>
   );
 }
 
@@ -1092,7 +1161,7 @@ function GeneralTab() {
 }
 
 function ParamsTab({ draft, update }: TabProps) {
-  const field = (key: keyof ChatParams, label: string, hint: string, min: number, max: number) => (
+  const field = (key: Exclude<keyof ChatParams, "relationship">, label: string, hint: string, min: number, max: number) => (
     <>
       <label>
         {label}
@@ -1117,6 +1186,15 @@ function ParamsTab({ draft, update }: TabProps) {
         {field("memory_top_k", "每次带上的相关事件记忆", "配了向量模型时生效；另外总会带上最近的 3 条", 1, 50)}
         {field("file_chars", "单个文件最多注入字数", "超出部分截断，并告诉模型被截断了", 1000, 500000)}
         {field("bubble_chars", "气泡最多显示字数", "超出后提示展开看全文", 40, 2000)}
+        <label>
+          关系数值
+          <div className="small muted">好感、信任、熟悉、心情影响回复的语气；辅助模型每隔几轮按对话调整（和记忆提取一起）</div>
+        </label>
+        <div className="checks">
+          <label>
+            <input type="checkbox" checked={draft.chat.relationship} onChange={(e) => update((d) => ({ ...d, chat: { ...d.chat, relationship: e.target.checked } }))} /> 开启
+          </label>
+        </div>
       </section>
     </div>
   );

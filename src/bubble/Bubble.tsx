@@ -220,7 +220,7 @@ export function Bubble() {
                 ref={inputRef}
                 rows={1}
                 value={text}
-                placeholder={chat.busy ? "等它说完…" : "说点什么…（/draw 描述 可以画图）"}
+                placeholder={chat.busy ? "等它说完…" : "说点什么…（/draw 描述 画图，@帮助 看命令）"}
                 onChange={(e) => setText(e.target.value)}
                 onPaste={async (e) => {
                   const imgs = await fromPaste(e);

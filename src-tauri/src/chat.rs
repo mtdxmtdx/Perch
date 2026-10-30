@@ -5,6 +5,7 @@ use crate::config::{Config, Persona, Provider};
 use crate::files::{self, AttachmentIn};
 use crate::llm::{self, ChatMessage, Endpoint, ImageUrl, Part};
 use crate::memory;
+use crate::relation::{self, Relation};
 use crate::store::{AttachmentMeta, Message, StoredReasoning};
 use crate::{imagegen, tools, windows, AppState};
 use serde::{Deserialize, Serialize};
@@ -83,7 +84,8 @@ fn compose_llm_text(text: &str, blocks: &[String], metas: &[AttachmentMeta]) -> 
 }
 
 /// 拼装上下文（稳定内容在前，方便命中前缀缓存）：
-/// 人格 → 长期记忆 → 滚动总结 → 预设对话 → 未总结的历史消息
+/// 人格 → 长期记忆 → 关系说明 → 滚动总结 → 预设对话 → 未总结的历史消息
+#[allow(clippy::too_many_arguments)]
 pub fn build_context(
     persona: &Persona,
     memory_block: Option<String>,
@@ -92,11 +94,16 @@ pub fn build_context(
     vision: bool,
     now: &str,
     provider_id: &str,
+    relation_note: Option<&str>,
 ) -> Vec<ChatMessage> {
     let mut system = persona.system_prompt.trim().to_string();
     if let Some(m) = memory_block {
         system.push_str("\n\n");
         system.push_str(&m);
+    }
+    if relation_note.is_some() {
+        system.push_str("\n\n");
+        system.push_str(relation::GUIDE);
     }
     if let Some(s) = summary.filter(|s| !s.trim().is_empty()) {
         system.push_str("\n\n## 更早对话的摘要\n");
@@ -110,13 +117,18 @@ pub fn build_context(
         }
     }
 
+    // 聊天命令（@状态 等）的来回不给模型看
+    let history: Vec<&Message> = history.iter().filter(|m| !m.llm_text.is_empty()).collect();
     let n = history.len();
-    for (i, m) in history.iter().enumerate() {
+    for (i, m) in history.iter().copied().enumerate() {
         let is_last = i + 1 == n;
         let mut text = m.llm_text.clone();
         if is_last && m.role == "user" {
-            // 当前时间只放在最后一条，不破坏前面的缓存前缀
-            text.push_str(&format!("\n\n（当前时间：{now}）"));
+            // 当前时间和关系只放在最后一条，不破坏前面的缓存前缀
+            match relation_note {
+                Some(r) => text.push_str(&format!("\n\n（当前时间：{now}；{r}）")),
+                None => text.push_str(&format!("\n\n（当前时间：{now}）")),
+            }
         }
         let images: Vec<&AttachmentMeta> =
             m.attachments.iter().filter(|a| a.kind == "image" && a.desc.is_none()).collect();
@@ -476,6 +488,11 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
     if text.trim().is_empty() && attachments.is_empty() {
         return Err("说点什么吧".into());
     }
+    if attachments.is_empty() {
+        if let Some(cmd) = relation::parse_command(&text) {
+            return run_command(&app, &cfg, &persona, &text, cmd);
+        }
+    }
     if let Some(prompt) = text.trim().strip_prefix("/draw") {
         return draw(&app, &cfg, &persona, &text, prompt.trim()).await;
     }
@@ -518,11 +535,27 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
         .map_err(|e| e.to_string())?;
     emit(&app, ChatEvent::User { persona: persona.id.clone(), message: user_msg });
 
+    let now = crate::store::now_secs();
+    let relation_note = cfg.chat.relationship.then(|| {
+        let mut r = state.store.relation(&persona.id);
+        r.on_user_message(now);
+        let _ = state.store.set_relation(&persona.id, &r);
+        r.note(now)
+    });
     let history = state.store.unsummarized(&persona.id).map_err(|e| e.to_string())?;
     let recall = memory::Recall::from_config(&cfg);
     let memory_block = memory::prompt_block(&memory::recall(&state.store, recall.as_ref(), &memory::query_text(&history)).await);
     let summary = state.store.summary(&persona.id).map_err(|e| e.to_string())?;
-    let mut messages = build_context(&persona, memory_block, summary, &history, provider.supports_vision, &now_label(), &provider.id);
+    let mut messages = build_context(
+        &persona,
+        memory_block,
+        summary,
+        &history,
+        provider.supports_vision,
+        &now_label(),
+        &provider.id,
+        relation_note.as_deref(),
+    );
 
     // 工具：模型支持、用户开启，且有可用的目录或生图模型
     let allowed = tools::canonical_allowed(&cfg.tools.allowed_dirs);
@@ -657,6 +690,57 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
 }
 
 /// /draw 命令：不经过对话模型，直接生图
+/// 聊天命令：本地处理，不发给模型。命令和回复会显示在聊天里，但不进模型的上下文（llm_text 为空）
+fn run_command(app: &AppHandle, cfg: &Config, persona: &Persona, text: &str, cmd: relation::Command) -> Result<(), String> {
+    use relation::Command;
+    let state = app.state::<AppState>();
+    let now = crate::store::now_secs();
+    let off = "关系数值已在设置里关闭，可以在「设置 → 参数」里打开。";
+    let reply = match cmd {
+        Command::Help => relation::HELP.to_string(),
+        Command::Unknown => format!("没认出这个命令。\n{}", relation::HELP),
+        Command::Status if !cfg.chat.relationship => off.to_string(),
+        Command::Status => relation::status_text(&state.store.relation(&persona.id), now, &persona.name),
+        Command::Set { .. } if !cfg.chat.relationship => off.to_string(),
+        Command::Set { field, value } => {
+            let mut r = state.store.relation(&persona.id);
+            relation::set_field(&mut r, field, value, now);
+            state.store.set_relation(&persona.id, &r).map_err(|e| e.to_string())?;
+            let _ = app.emit("relation-changed", ());
+            format!("{}已设为 {:.0}。", relation::field_label(field), value)
+        }
+        Command::Remember(content) => {
+            state.store.add_memory("core", &content).map_err(|e| e.to_string())?;
+            let _ = app.emit("memories-changed", ());
+            format!("记住了：{content}")
+        }
+        Command::Forget(key) => {
+            let hits: Vec<_> = state
+                .store
+                .memories()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|m| m.content.contains(key.as_str()))
+                .collect();
+            for m in &hits {
+                state.store.delete_memory(m.id).map_err(|e| e.to_string())?;
+            }
+            let _ = app.emit("memories-changed", ());
+            if hits.is_empty() {
+                format!("没有找到包含「{key}」的记忆。")
+            } else {
+                let list: Vec<String> = hits.iter().map(|m| format!("- {}", m.content)).collect();
+                format!("忘掉了 {} 条：\n{}", hits.len(), list.join("\n"))
+            }
+        }
+    };
+    let user_msg = state.store.insert_message(&persona.id, "user", text, "", &[]).map_err(|e| e.to_string())?;
+    emit(app, ChatEvent::User { persona: persona.id.clone(), message: user_msg });
+    let msg = state.store.insert_message(&persona.id, "assistant", &reply, "", &[]).map_err(|e| e.to_string())?;
+    emit(app, ChatEvent::Added { persona: persona.id.clone(), message: msg });
+    Ok(())
+}
+
 async fn draw(app: &AppHandle, cfg: &Config, persona: &Persona, text: &str, prompt: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
     if prompt.is_empty() {
@@ -725,6 +809,7 @@ async fn summarize_if_needed(state: &AppState, cfg: &Config, persona: &Persona) 
     let old = state.store.summary(&persona.id).map_err(|e| e.to_string())?.unwrap_or_default();
     let dialog: String = history[..=cut]
         .iter()
+        .filter(|m| !m.llm_text.is_empty())
         .map(|m| format!("{}：{}", if m.role == "user" { "用户" } else { persona.name.as_str() }, m.llm_text))
         .collect::<Vec<_>>()
         .join("\n");
@@ -742,10 +827,18 @@ async fn update_memories(app: &AppHandle, state: &AppState, cfg: &Config, person
     }
     state.store.set_state("memory_turns", "0");
     let ep = Endpoint::from_provider(cfg.aux_provider(persona).ok_or("没有可用的辅助模型")?);
-    let recent = state
+    let recent: Vec<Message> = state
         .store
         .recent(&persona.id, cfg.chat.memory_extract_every * 2 + 2)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|m| !m.llm_text.is_empty())
+        .collect();
+    if cfg.chat.relationship {
+        if let Err(e) = update_relation(app, state, &ep, persona, &recent).await {
+            eprintln!("[chat] 关系评估失败: {e}");
+        }
+    }
     // 配了向量模型时只给辅助模型看和这段对话相关的旧记忆，记忆多了也不会撑爆提示词
     let recall = memory::Recall::from_config(cfg);
     let topic: String = recent.iter().map(|m| m.display.chars().take(200).collect::<String>()).collect::<Vec<_>>().join("\n");
@@ -756,6 +849,19 @@ async fn update_memories(app: &AppHandle, state: &AppState, cfg: &Config, person
         memory::backfill(&state.store, r).await?;
     }
     let _ = app.emit("memories-changed", ());
+    Ok(())
+}
+
+/// 按最近的对话调整好感、信任、心情
+async fn update_relation(app: &AppHandle, state: &AppState, ep: &Endpoint, persona: &Persona, recent: &[Message]) -> Result<(), String> {
+    let now = crate::store::now_secs();
+    let mut r: Relation = state.store.relation(&persona.id);
+    let d = relation::evaluate(ep, &persona.name, recent, &r, now).await?;
+    // 评估期间可能被用户用命令改过，重新读一次再加
+    r = state.store.relation(&persona.id);
+    r.apply(&d, now);
+    state.store.set_relation(&persona.id, &r).map_err(|e| e.to_string())?;
+    let _ = app.emit("relation-changed", ());
     Ok(())
 }
 
@@ -800,11 +906,29 @@ mod tests {
     }
 
     #[test]
+    fn relation_note_goes_last_and_commands_are_hidden() {
+        let mut cmd = msg(2, "user", "@状态", vec![]);
+        cmd.llm_text = String::new();
+        let mut cmd_reply = msg(3, "assistant", "好感度 50", vec![]);
+        cmd_reply.llm_text = String::new();
+        let hist = vec![msg(1, "assistant", "早呀", vec![]), cmd, cmd_reply, msg(4, "user", "在吗", vec![])];
+        let v = serde_json::to_value(build_context(&Persona::default(), None, None, &hist, false, "T", "", Some("关系不错"))).unwrap();
+        let msgs = v.as_array().unwrap();
+        // system + 早呀 + 在吗：命令的来回被跳过
+        assert_eq!(msgs.len(), 3);
+        assert!(msgs[0]["content"].as_str().unwrap().contains("你和用户的关系"));
+        assert_eq!(msgs[2]["content"], "在吗\n\n（当前时间：T；关系不错）");
+        // 关掉时 system 里没有关系说明
+        let v = serde_json::to_value(build_context(&Persona::default(), None, None, &hist, false, "T", "", None)).unwrap();
+        assert!(!v[0]["content"].as_str().unwrap().contains("你和用户的关系"));
+    }
+
+    #[test]
     fn context_order_and_time_on_last_message() {
         let mut p = Persona::default();
         p.begin_dialogs = vec![crate::config::DialogPair { user: "你是谁".into(), assistant: "我是小桌宠".into() }];
         let hist = vec![msg(1, "user", "早", vec![]), msg(2, "assistant", "早呀", vec![]), msg(3, "user", "在吗", vec![])];
-        let ctx = build_context(&p, Some("## 记忆\n- x".into()), Some("聊过天气".into()), &hist, false, "T", "");
+        let ctx = build_context(&p, Some("## 记忆\n- x".into()), Some("聊过天气".into()), &hist, false, "T", "", None);
         let v = serde_json::to_value(&ctx).unwrap();
         let sys = v[0]["content"].as_str().unwrap();
         assert!(sys.starts_with("你是栖栖"));
@@ -820,14 +944,14 @@ mod tests {
     fn images_only_sent_when_vision_and_recent() {
         let p = Persona::default();
         let hist = vec![msg(1, "user", "看", vec![image(None)])];
-        let v = serde_json::to_value(build_context(&p, None, None, &hist, true, "T", "")).unwrap();
+        let v = serde_json::to_value(build_context(&p, None, None, &hist, true, "T", "", None)).unwrap();
         // 文件不存在时退化成文字占位，但仍是 parts 形式
         assert!(v[1]["content"].is_array());
-        let v = serde_json::to_value(build_context(&p, None, None, &hist, false, "T", "")).unwrap();
+        let v = serde_json::to_value(build_context(&p, None, None, &hist, false, "T", "", None)).unwrap();
         assert!(v[1]["content"].as_str().unwrap().contains("已省略"));
         // 已经转述过的图片不再重复发送
         let hist = vec![msg(1, "user", "看", vec![image(Some("一只猫"))])];
-        let v = serde_json::to_value(build_context(&p, None, None, &hist, true, "T", "")).unwrap();
+        let v = serde_json::to_value(build_context(&p, None, None, &hist, true, "T", "", None)).unwrap();
         assert!(v[1]["content"].is_string());
     }
 
@@ -856,7 +980,7 @@ mod tests {
         let mut reply = msg(2, "assistant", "写好啦", vec![tool("write_file", "{\"path\":\"D:\\\\1.txt\"}", "ok"), tool("edit_file", "{}", "denied")]);
         reply.llm_text = "写好啦".into();
         let hist = vec![msg(1, "user", "写个文件", vec![]), reply, msg(3, "user", "再写一个", vec![])];
-        let v = serde_json::to_value(build_context(&Persona::default(), None, None, &hist, false, "T", "")).unwrap();
+        let v = serde_json::to_value(build_context(&Persona::default(), None, None, &hist, false, "T", "", None)).unwrap();
         // system, user, assistant(tool_calls), tool, tool, assistant(文字), user
         assert_eq!(v.as_array().unwrap().len(), 7);
         assert_eq!(v[2]["tool_calls"][0]["function"]["name"], "write_file");
@@ -871,16 +995,16 @@ mod tests {
         let mut a = msg(2, "assistant", "答案", vec![]);
         a.reasoning = Some(StoredReasoning { provider: "ds".into(), tools: String::new(), final_answer: "我想了想".into() });
         let hist = vec![msg(1, "user", "问", vec![]), a, msg(3, "user", "再问", vec![])];
-        let same = serde_json::to_value(build_context(&Persona::default(), None, None, &hist, false, "T", "ds")).unwrap();
+        let same = serde_json::to_value(build_context(&Persona::default(), None, None, &hist, false, "T", "ds", None)).unwrap();
         assert_eq!(same[2]["reasoning_content"], "我想了想");
-        let other = serde_json::to_value(build_context(&Persona::default(), None, None, &hist, false, "T", "openai")).unwrap();
+        let other = serde_json::to_value(build_context(&Persona::default(), None, None, &hist, false, "T", "openai", None)).unwrap();
         assert!(other[2].get("reasoning_content").is_none());
     }
 
     #[test]
     fn fake_ops_text_is_stripped() {
         let fake = msg(2, "assistant", "建好啦～  （本轮操作：创建 D:\\2.txt（完成））", vec![]);
-        let v = serde_json::to_value(build_context(&Persona::default(), None, None, &[msg(1, "user", "建", vec![]), fake], false, "T", "")).unwrap();
+        let v = serde_json::to_value(build_context(&Persona::default(), None, None, &[msg(1, "user", "建", vec![]), fake], false, "T", "", None)).unwrap();
         assert_eq!(v[2]["content"], "建好啦～");
         assert_eq!(strip_fake_ops("没有说明"), "没有说明");
     }

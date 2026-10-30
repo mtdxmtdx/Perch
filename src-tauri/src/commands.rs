@@ -284,6 +284,66 @@ pub fn memory_delete(state: State<AppState>, id: i64) -> Result<(), String> {
     state.store.delete_memory(id).map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationView {
+    pub persona: String,
+    pub persona_name: String,
+    pub affection: f64,
+    pub trust: f64,
+    pub familiarity: f64,
+    /// 此刻的心情（已经按时间回落）
+    pub mood: f64,
+    /// 给模型看的文字描述
+    pub note: String,
+}
+
+/// 当前人格的关系数值
+#[tauri::command]
+pub fn relation_get(state: State<AppState>) -> RelationView {
+    let persona = state.config.lock().unwrap().active_persona();
+    let r = state.store.relation(&persona.id);
+    let now = crate::store::now_secs();
+    RelationView {
+        persona: persona.id,
+        persona_name: persona.name,
+        affection: r.affection,
+        trust: r.trust,
+        familiarity: r.familiarity,
+        mood: r.mood_at(now),
+        note: r.note(now),
+    }
+}
+
+/// 手动设置当前人格的关系数值；reset 为 true 时恢复默认
+#[tauri::command]
+pub fn relation_set(
+    app: AppHandle,
+    state: State<AppState>,
+    affection: f64,
+    trust: f64,
+    familiarity: f64,
+    mood: f64,
+    reset: Option<bool>,
+) -> Result<(), String> {
+    let persona = state.config.lock().unwrap().active_persona();
+    if reset.unwrap_or(false) {
+        state.store.delete_relation(&persona.id).map_err(|e| e.to_string())?;
+    } else {
+        let c = |v: f64| if v.is_finite() { v.clamp(0.0, 100.0) } else { 50.0 };
+        let r = crate::relation::Relation {
+            affection: c(affection),
+            trust: c(trust),
+            familiarity: c(familiarity),
+            mood: c(mood),
+            updated_at: crate::store::now_secs(),
+        };
+        state.store.set_relation(&persona.id, &r).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("relation-changed", ());
+    Ok(())
+}
+
 #[tauri::command]
 pub fn bubble_open(app: AppHandle, mode: String) {
     windows::open_bubble(&app, &mode);

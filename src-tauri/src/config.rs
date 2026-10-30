@@ -337,6 +337,8 @@ pub struct ChatParams {
     pub file_chars: usize,
     /// 气泡里最多显示多少字，超出提示展开
     pub bubble_chars: usize,
+    /// 关系数值（好感、信任、熟悉、心情）：影响回复语气，由辅助模型随对话调整
+    pub relationship: bool,
 }
 
 impl Default for ChatParams {
@@ -349,6 +351,7 @@ impl Default for ChatParams {
             memory_top_k: 8,
             file_chars: 20000,
             bubble_chars: 160,
+            relationship: true,
         }
     }
 }
