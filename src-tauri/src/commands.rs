@@ -325,10 +325,10 @@ pub async fn model_setup_save(app: AppHandle, provider: Provider, key: String) -
     crate::onboarding::save(&app, provider, key).await
 }
 
-/// 打开服务商拿 Key 的页面（只允许几个已知的地址）
+/// 用浏览器打开链接（拿 Key 的页面、语音运行库下载地址；只允许几个已知的网站）
 #[tauri::command]
-pub fn open_key_page(url: String) -> Result<(), String> {
-    crate::onboarding::open_key_page(&url)
+pub fn open_link(url: String) -> Result<(), String> {
+    crate::onboarding::open_link(&url)
 }
 
 /// 当前人格的关系数值

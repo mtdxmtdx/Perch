@@ -561,7 +561,7 @@ function VoiceTab({ draft, update }: TabProps) {
     if (typeof d === "string") setVoice({ runtime_dir: d });
   };
   const ready = !!status && status.runtimeReady && status.modelReady;
-  const needSize = status ? [!status.runtimeReady && "运行库约 7.5MB", !status.modelReady && "模型约 240MB"].filter(Boolean).join(" + ") : "";
+  const needSize = status ? [!status.runtimeReady && "运行库约 8MB", !status.modelReady && "模型约 240MB"].filter(Boolean).join(" + ") : "";
   const restartNeeded = !!status?.runtimeLoadedFrom && !!status.runtimeDir && status.runtimeLoadedFrom !== status.runtimeDir;
 
   return (
@@ -574,7 +574,7 @@ function VoiceTab({ draft, update }: TabProps) {
           </label>
         </div>
         <p className="muted small">
-          可选功能，默认关闭。用 SenseVoice（中、英、日、韩、粤语）离线识别，配合 Silero VAD 去掉静音。需要语音运行库（sherpa-onnx，约 7.5MB）和识别模型（约
+          可选功能，默认关闭。用 SenseVoice（中、英、日、韩、粤语）离线识别，配合 Silero VAD 去掉静音。需要语音运行库（sherpa-onnx，约 8MB）和识别模型（约
           240MB）：可以一键下载（只需一次，支持断点续传），也可以在下面指定已有的文件夹。关着时不加载这些组件，也不占用快捷键。
         </p>
         {v.enabled && status && !ready && <div className="warn">已开启，但还缺{!status.runtimeReady ? "语音运行库" : ""}{!status.runtimeReady && !status.modelReady ? "和" : ""}{!status.modelReady ? "识别模型" : ""}，下载或指定之后才能用。</div>}
@@ -587,7 +587,25 @@ function VoiceTab({ draft, update }: TabProps) {
             {status.runtimeReady ? (
               <div className="ok">✓ 运行库已就绪 <span className="muted small">{status.runtimeDir}</span></div>
             ) : (
-              <div className="warn">还没有语音运行库 <span className="muted small">（下载到 {status.runtimeDownloadDir}）</span></div>
+              <>
+                <div className="warn">还没有语音运行库 <span className="muted small">（下载到 {status.runtimeDownloadDir}）</span></div>
+                <details className="small muted">
+                  <summary>下载太慢或失败？手动下载</summary>
+                  <div>自动下载会依次尝试下面几个来源（国内镜像优先），解压时校验文件。也可以自己下载其中一个：</div>
+                  <ul>
+                    {status.runtimeSources.map((s) => (
+                      <li key={s.url}>
+                        <button className="link" onClick={() => void api.openLink(s.url)}>
+                          {s.label}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  <div>
+                    用 7-Zip 等工具解压（.tgz、.nupkg 也能直接打开），把里面的 onnxruntime.dll 和 sherpa-onnx-c-api.dll 放进同一个文件夹，再在下面「自己的运行库文件夹」里选它。
+                  </div>
+                </details>
+              </>
             )}
             {restartNeeded && <div className="muted small">本次运行已从 {status.runtimeLoadedFrom} 加载运行库，换的文件夹重启后生效。</div>}
             {status.modelReady ? (

@@ -23,8 +23,8 @@ pub const FILES: &[ModelFile] = &[
         path: "silero_vad.onnx",
         sizes: &[643_854, 1_807_522],
         urls: &[
-            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
             "https://hf-mirror.com/csukuangfj/vad/resolve/main/silero_vad.onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
             "https://huggingface.co/csukuangfj/vad/resolve/main/silero_vad.onnx",
         ],
     },
@@ -168,21 +168,42 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
-/// 下载语音运行库（sherpa-onnx 官方发布的 Windows 动态库，约 7.5MB）并解压出需要的 DLL
+/// 下载语音运行库（sherpa-onnx v2.0.0 的 Windows 动态库，约 8MB）并解压出需要的 DLL。
+/// 依次尝试各个来源（国内镜像优先），解压时逐个校验 DLL 的 SHA256
 pub async fn download_runtime(cancel: &AtomicBool, mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
     use super::runtime;
     let http = client()?;
-    let archive = runtime::archive_path();
     std::fs::create_dir_all(runtime::default_dir()).map_err(|e| e.to_string())?;
-    fetch(&http, runtime::ARCHIVE_URL, &archive, &[runtime::ARCHIVE_SIZE], cancel, &mut on_progress)
-        .await
-        .map_err(|e| format!("语音运行库下载失败：{e}"))?;
-    let a = archive.clone();
-    tokio::task::spawn_blocking(move || runtime::extract(&a, &runtime::default_dir()))
-        .await
-        .map_err(|e| e.to_string())??;
-    let _ = std::fs::remove_file(&archive);
-    Ok(())
+    let mut errors = Vec::new();
+    for (i, source) in runtime::SOURCES.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("已取消".into());
+        }
+        let archive = runtime::archive_path(source);
+        let r = match fetch(&http, source.url, &archive, &[source.size], cancel, &mut on_progress).await {
+            Ok(()) => {
+                let a = archive.clone();
+                tokio::task::spawn_blocking(move || runtime::extract(&a, &runtime::SOURCES[i], &runtime::default_dir()))
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r)
+            }
+            Err(e) => Err(e),
+        };
+        match r {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&archive);
+                return Ok(());
+            }
+            Err(e) if e == "已取消" => return Err(e),
+            Err(e) => {
+                // 校验没过的压缩包删掉，免得下次断点续传接着用
+                let _ = std::fs::remove_file(&archive);
+                errors.push(format!("{}：{e}", source.label));
+            }
+        }
+    }
+    Err(format!("语音运行库下载失败（{}）", errors.join("；")))
 }
 
 /// 下载所有缺少的文件；每个文件依次尝试各个来源

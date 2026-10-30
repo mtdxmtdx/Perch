@@ -75,7 +75,7 @@ export function ModelSetup({ onPendingChange, onFinished }: { onPendingChange: (
       <div className="offer-note">
         {preset.keyUrl && (
           <>
-            <button className="link" onClick={() => void api.openKeyPage(preset.keyUrl!)}>
+            <button className="link" onClick={() => void api.openLink(preset.keyUrl!)}>
               去哪里拿 Key？
             </button>{" "}
           </>
