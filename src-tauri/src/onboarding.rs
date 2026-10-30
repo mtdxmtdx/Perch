@@ -108,18 +108,26 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
 }
 
-/// 只允许打开这些服务商的控制台页面（拿 Key 用）
-const KEY_PAGE_HOSTS: [&str; 5] =
-    ["platform.deepseek.com", "bailian.console.aliyun.com", "cloud.siliconflow.cn", "openrouter.ai", "platform.openai.com"];
+/// 只允许打开这些网站：服务商拿 Key 的页面、语音运行库的下载地址
+const LINK_HOSTS: [&str; 8] = [
+    "platform.deepseek.com",
+    "bailian.console.aliyun.com",
+    "cloud.siliconflow.cn",
+    "openrouter.ai",
+    "platform.openai.com",
+    "registry.npmmirror.com",
+    "github.com",
+    "api.nuget.org",
+];
 
 fn allowed_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else { return false };
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    KEY_PAGE_HOSTS.contains(&host)
+    LINK_HOSTS.contains(&host)
 }
 
-/// 用默认浏览器打开服务商拿 Key 的页面
-pub fn open_key_page(url: &str) -> Result<(), String> {
+/// 用默认浏览器打开链接（只允许上面几个网站）
+pub fn open_link(url: &str) -> Result<(), String> {
     if !allowed_url(url) {
         return Err("不支持打开这个地址".into());
     }
@@ -149,6 +157,7 @@ mod tests {
         assert!(!allowed_url("https://platform.deepseek.com.evil.com/"));
         assert!(!allowed_url("file:///C:/Windows/System32/calc.exe"));
         assert!(!allowed_url("https://example.com/?u=platform.openai.com"));
+        assert!(allowed_url(crate::voice::runtime::SOURCES[0].url) && allowed_url(crate::voice::runtime::SOURCES[2].url));
     }
 
     #[test]

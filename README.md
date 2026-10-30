@@ -37,7 +37,7 @@ Perch 平时站在任务栏和窗口的顶边上，走来走去、跳上跳下�
 
 **语音输入（可选，默认关闭）**
 - 本地识别：SenseVoice + Silero VAD（sherpa-onnx），不上传录音。
-- 在「设置 → 语音」里开启，一键下载语音组件：运行库约 7.5MB（来自 sherpa-onnx 官方发布），模型约 240MB（优先走 hf-mirror 镜像）；也可以指定已有的运行库和模型文件夹。
+- 在「设置 → 语音」里开启，一键下载语音组件：运行库约 8MB（sherpa-onnx v2.0.0，优先走 npmmirror 国内镜像，其次 GitHub 官方发布和 NuGet，解压时校验 SHA256），模型约 240MB（优先走 hf-mirror 镜像）；也可以指定已有的运行库和模型文件夹。
 - 按住快捷键（默认 `Ctrl+Shift+Space`）或 🎤 说话，边说边在输入框里预览，松开即识别并发送。
 - 不开启时不加载任何语音组件，程序本身不依赖它们。
 
@@ -93,7 +93,7 @@ cargo test --lib
 
 ## 已知限制
 
-- 安装包不附带语音运行库，开启语音输入时在设置里下载（运行库来自 GitHub，网络不好时可以手动下载 [sherpa-onnx v2.0.0 的 Windows 动态库](https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.0/sherpa-onnx-v2.0.0-win-x64-shared-MT-Release-lib.tar.bz2)，解压后在设置里指定 `lib` 文件夹）。
+- 安装包不附带语音运行库，开启语音输入时在设置里下载。自动下载都失败时，「设置 → 语音」里有手动下载的链接（[npmmirror](https://registry.npmmirror.com/sherpa-onnx-win-x64/-/sherpa-onnx-win-x64-2.0.0.tgz)、[GitHub](https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.0/sherpa-onnx-v2.0.0-win-x64-shared-MT-Release-lib.tar.bz2)），解压后把 `onnxruntime.dll` 和 `sherpa-onnx-c-api.dll` 放进同一个文件夹，在设置里指定它。
 - 换了运行库文件夹要重启程序才生效。
 - 只支持 Windows。
 - 预留了接口、尚未实现：TTS 语音输出、在桌宠里审批 agent 授权、本地生图。

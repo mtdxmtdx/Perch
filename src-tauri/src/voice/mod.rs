@@ -237,12 +237,20 @@ pub struct Status {
     /// 这次运行已经从哪里加载了运行库（换文件夹要重启才生效）
     pub runtime_loaded_from: Option<String>,
     pub runtime_download_dir: String,
+    /// 运行库的下载来源（自动下载依次尝试；也给手动下载用）
+    pub runtime_sources: Vec<RuntimeSource>,
     pub model_ready: bool,
     pub missing: Vec<String>,
     pub downloading: bool,
     pub download_dir: String,
     pub devices: Vec<String>,
     pub hotkey_error: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RuntimeSource {
+    pub label: &'static str,
+    pub url: &'static str,
 }
 
 pub fn status(app: &AppHandle) -> Status {
@@ -259,6 +267,7 @@ pub fn status(app: &AppHandle) -> Status {
         runtime_dir: runtime_found.map(|d| d.display().to_string()),
         runtime_loaded_from: runtime::loaded_from().map(|d| d.display().to_string()),
         runtime_download_dir: runtime::default_dir().display().to_string(),
+        runtime_sources: runtime::SOURCES.iter().map(|s| RuntimeSource { label: s.label, url: s.url }).collect(),
         model_ready: located.is_ok(),
         missing: located.err().unwrap_or_default(),
         downloading: state.voice.downloading.load(Ordering::SeqCst),

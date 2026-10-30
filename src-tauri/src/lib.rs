@@ -204,7 +204,7 @@ pub fn run() {
             commands::model_setup_pending,
             commands::model_setup_dismiss,
             commands::model_setup_save,
-            commands::open_key_page,
+            commands::open_link,
             commands::relation_set,
             commands::bubble_open,
             commands::bubble_close,

@@ -96,6 +96,7 @@ export interface VoiceStatus {
   runtimeDir: string | null;
   runtimeLoadedFrom: string | null;
   runtimeDownloadDir: string;
+  runtimeSources: { label: string; url: string }[];
   modelReady: boolean;
   missing: string[];
   downloading: boolean;
@@ -314,7 +315,7 @@ export const api = {
   modelSetupPending: () => invoke<boolean>("model_setup_pending"),
   modelSetupDismiss: () => invoke<void>("model_setup_dismiss"),
   modelSetupSave: (provider: Provider, key: string) => invoke<string>("model_setup_save", { provider, key }),
-  openKeyPage: (url: string) => invoke<void>("open_key_page", { url }),
+  openLink: (url: string) => invoke<void>("open_link", { url }),
   relationGet: () => invoke<RelationView>("relation_get"),
   relationSet: (v: RelationValues, reset = false) => invoke<void>("relation_set", { ...v, reset }),
   bubbleOpen: (mode: "input" | "speak") => invoke<void>("bubble_open", { mode }),
