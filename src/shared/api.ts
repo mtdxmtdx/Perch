@@ -310,6 +310,7 @@ export const api = {
   memoryList: () => invoke<Memory[]>("memory_list"),
   memorySave: (id: number | null, kind: string, content: string) => invoke<void>("memory_save", { id, kind, content }),
   memoryDelete: (id: number) => invoke<void>("memory_delete", { id }),
+  skinImport: (path: string, apply = false) => invoke<SkinEntry>("skin_import", { path, apply }),
   modelSetupPending: () => invoke<boolean>("model_setup_pending"),
   modelSetupDismiss: () => invoke<void>("model_setup_dismiss"),
   modelSetupSave: (provider: Provider, key: string) => invoke<string>("model_setup_save", { provider, key }),

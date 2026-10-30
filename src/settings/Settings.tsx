@@ -139,7 +139,7 @@ export function Settings() {
       </nav>
       <main>
         {tab === "models" && <ModelsTab draft={draft} update={update} keys={keys} setKeys={(k) => { setKeys(k); setDirty(true); }} hasKey={hasKey} reasoningIgnored={reasoningIgnored} />}
-        {tab === "personas" && <PersonasTab draft={draft} update={update} skins={skins} />}
+        {tab === "personas" && <PersonasTab draft={draft} update={update} skins={skins} onSkinImported={(e) => setSkins((l) => [...l, e])} />}
         {tab === "tools" && <ToolsTab draft={draft} update={update} picturesDir={picturesDir} />}
         {tab === "voice" && <VoiceTab draft={draft} update={update} />}
         {tab === "agents" && <AgentsTab draft={draft} update={update} />}
@@ -336,11 +336,26 @@ function ModelsTab({
   );
 }
 
-function PersonasTab({ draft, update, skins }: TabProps & { skins: SkinEntry[] }) {
+function PersonasTab({ draft, update, skins, onSkinImported }: TabProps & { skins: SkinEntry[]; onSkinImported: (e: SkinEntry) => void }) {
   const [sel, setSel] = useState(draft.activePersona);
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const p = draft.personas.find((x) => x.id === sel) ?? draft.personas[0];
   const set = (patch: Partial<Persona>) =>
     update((d) => ({ ...d, personas: d.personas.map((x) => (x.id === p.id ? { ...x, ...patch } : x)) }));
+
+  // 导入 zip 皮肤，并绑定到当前人格（保存后生效）
+  const importSkin = async () => {
+    const path = await openDialog({ title: "导入皮肤", filters: [{ name: "皮肤压缩包", extensions: ["zip"] }] });
+    if (typeof path !== "string") return;
+    try {
+      const e = await api.skinImport(path);
+      onSkinImported(e);
+      set({ skin: e.id });
+      setImportMsg({ ok: true, text: `已导入「${e.name}」并绑定到这个人格，保存后生效。` });
+    } catch (err) {
+      setImportMsg({ ok: false, text: `导入失败：${errorText(err)}` });
+    }
+  };
 
   const add = () => {
     const np: Persona = { id: newId(), name: "新人格", system_prompt: "", begin_dialogs: [], provider: null, temperature: null, skin: null };
@@ -387,14 +402,20 @@ function PersonasTab({ draft, update, skins }: TabProps & { skins: SkinEntry[] }
             onChange={(e) => set({ temperature: e.target.value === "" ? null : Number(e.target.value) })}
           />
           <label>绑定皮肤</label>
-          <select value={p.skin ?? ""} onChange={(e) => set({ skin: e.target.value || null })}>
-            <option value="">（不绑定）</option>
-            {skins.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
+          <div>
+            <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto" }}>
+              <select value={p.skin ?? ""} onChange={(e) => set({ skin: e.target.value || null })}>
+                <option value="">（不绑定）</option>
+                {skins.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+              <button onClick={() => void importSkin()}>导入皮肤…</button>
+            </div>
+            {importMsg && <div className={importMsg.ok ? "small muted" : "error"}>{importMsg.text}</div>}
+          </div>
         </div>
         <label>系统提示词（人设）</label>
         <textarea rows={8} value={p.system_prompt} onChange={(e) => set({ system_prompt: e.target.value })} />
