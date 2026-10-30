@@ -298,6 +298,29 @@ pub struct RelationView {
     pub note: String,
 }
 
+/// 新用户引导卡片是否要显示
+#[tauri::command]
+pub fn model_setup_pending(app: AppHandle) -> bool {
+    crate::onboarding::pending(&app)
+}
+
+#[tauri::command]
+pub fn model_setup_dismiss(app: AppHandle) {
+    crate::onboarding::dismiss(&app);
+}
+
+/// 测试并保存新用户填的服务商和 Key
+#[tauri::command]
+pub async fn model_setup_save(app: AppHandle, provider: Provider, key: String) -> Result<String, String> {
+    crate::onboarding::save(&app, provider, key).await
+}
+
+/// 打开服务商拿 Key 的页面（只允许几个已知的地址）
+#[tauri::command]
+pub fn open_key_page(url: String) -> Result<(), String> {
+    crate::onboarding::open_key_page(&url)
+}
+
 /// 当前人格的关系数值
 #[tauri::command]
 pub fn relation_get(state: State<AppState>) -> RelationView {

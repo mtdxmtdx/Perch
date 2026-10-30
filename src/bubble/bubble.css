@@ -100,3 +100,5 @@ button.mic.on { background: var(--accent-soft); border-color: var(--accent); }
 .agent-offer .offer-note { font-size: 11.5px; color: var(--muted); }
 .agent-offer .offer-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .agent-offer .offer-actions button { padding: 4px 10px; }
+.model-setup select, .model-setup input { width: 100%; }
+.model-setup .offer-note button.link { padding: 0; }

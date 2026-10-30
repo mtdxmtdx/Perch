@@ -7,6 +7,7 @@ mod files;
 mod imagegen;
 mod llm;
 mod memory;
+mod onboarding;
 mod pet;
 mod proactive;
 mod relation;
@@ -199,6 +200,10 @@ pub fn run() {
             commands::memory_save,
             commands::memory_delete,
             commands::relation_get,
+            commands::model_setup_pending,
+            commands::model_setup_dismiss,
+            commands::model_setup_save,
+            commands::open_key_page,
             commands::relation_set,
             commands::bubble_open,
             commands::bubble_close,
@@ -239,6 +244,7 @@ pub fn run() {
             pet::controller::spawn(app.handle().clone(), shared_for_setup);
             agents::start(app.handle());
             proactive::start(app.handle());
+            onboarding::start(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())
