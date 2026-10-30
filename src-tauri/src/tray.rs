@@ -21,12 +21,16 @@ pub fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         })
         .collect::<tauri::Result<Vec<_>>>()?;
     let skin_refs: Vec<&dyn IsMenuItem<Wry>> = skin_items.iter().map(|i| i as &dyn IsMenuItem<Wry>).collect();
-    let skins = if skin_refs.is_empty() {
-        let none = MenuItem::with_id(app, "noop", "（未找到皮肤，使用占位形象）", false, None::<&str>)?;
-        Submenu::with_items(app, "皮肤", true, &[&none])?
-    } else {
-        Submenu::with_items(app, "皮肤", true, &skin_refs)?
-    };
+    let sep = PredefinedMenuItem::separator(app)?;
+    let import = MenuItem::with_id(app, "skin_import", "导入皮肤（zip）…", true, None::<&str>)?;
+    let none = MenuItem::with_id(app, "noop", "（未找到皮肤，使用占位形象）", false, None::<&str>)?;
+    let mut skin_refs = skin_refs;
+    if skin_refs.is_empty() {
+        skin_refs.push(&none);
+    }
+    skin_refs.push(&sep);
+    skin_refs.push(&import);
+    let skins = Submenu::with_items(app, "皮肤", true, &skin_refs)?;
 
     let scale_items = SCALES
         .iter()
@@ -87,6 +91,45 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 托盘「导入皮肤」：选一个 zip，导入后直接换上，结果用气泡说一声
+fn import_from_tray(app: &AppHandle) {
+    use tauri_plugin_dialog::DialogExt;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let Some(path) = app
+            .dialog()
+            .file()
+            .set_title("导入皮肤")
+            .add_filter("皮肤压缩包", &["zip"])
+            .blocking_pick_file()
+            .and_then(|p| p.into_path().ok())
+        else {
+            return;
+        };
+        let say = |text: &str| crate::speak::say(&app, "Perch", text, crate::speak::Source::System, false);
+        match skin::import(&path) {
+            Ok(entry) => {
+                after_skin_import(&app, &entry, true);
+                say(&format!("换上新皮肤「{}」啦～", entry.name));
+            }
+            Err(e) => say(&format!("皮肤没导入成功：{e}")),
+        }
+    });
+}
+
+/// 导入皮肤之后：刷新菜单里的皮肤列表；apply 时换上它
+pub fn after_skin_import(app: &AppHandle, entry: &skin::SkinEntry, apply: bool) {
+    if apply {
+        let state = app.state::<AppState>();
+        let mut cfg = state.config.lock().unwrap();
+        cfg.skin = Some(entry.id.clone());
+        config::save(&cfg);
+        drop(cfg);
+        let _ = app.emit_to("pet", "pet-skin-changed", ());
+    }
+    refresh_menu(app);
+}
+
 pub fn refresh_menu(app: &AppHandle) {
     if let (Some(tray), Ok(menu)) = (app.tray_by_id("main"), build_menu(app)) {
         let _ = tray.set_menu(Some(menu));
@@ -130,6 +173,7 @@ pub fn handle(app: &AppHandle, id: &str) {
         "quit" => app.exit(0),
         "open_chat" => crate::windows::open_chat(app),
         "open_settings" => crate::windows::open_settings(app),
+        "skin_import" => import_from_tray(app),
         _ => {
             if let Some(pid) = id.strip_prefix("persona:") {
                 crate::commands::activate_persona(app, pid);

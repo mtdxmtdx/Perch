@@ -298,6 +298,16 @@ pub struct RelationView {
     pub note: String,
 }
 
+/// 从 zip（或文件夹）导入皮肤；apply 为 true 时顺便换上
+#[tauri::command]
+pub async fn skin_import(app: AppHandle, path: String, apply: Option<bool>) -> Result<skin::SkinEntry, String> {
+    let entry = tauri::async_runtime::spawn_blocking(move || skin::import(std::path::Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())??;
+    tray::after_skin_import(&app, &entry, apply.unwrap_or(false));
+    Ok(entry)
+}
+
 /// 新用户引导卡片是否要显示
 #[tauri::command]
 pub fn model_setup_pending(app: AppHandle) -> bool {

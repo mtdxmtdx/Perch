@@ -200,6 +200,7 @@ pub fn run() {
             commands::memory_save,
             commands::memory_delete,
             commands::relation_get,
+            commands::skin_import,
             commands::model_setup_pending,
             commands::model_setup_dismiss,
             commands::model_setup_save,

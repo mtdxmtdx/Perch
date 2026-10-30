@@ -79,7 +79,7 @@ cargo test --lib
    - Codex：开启或修复后，要在 Codex 里输入 `/hooks` 信任桌宠的 hooks。
    - DeepSeek Harness：需要先在 DSH 菜单「管理 dsh 命令…」里安装命令行；装好插件后重启 DSH。
 
-**皮肤**：默认是内置的栖栖。想换别的，把 Codex 宠物文件夹放进 `%USERPROFILE%\.codex\pets\` 或 `%APPDATA%\Perch\skins\`，在托盘「皮肤」菜单里选择。自己做皮肤的格式见 [docs/skin-format.md](docs/skin-format.md)。
+**皮肤**：默认是内置的栖栖。想换别的，在托盘「皮肤」→「导入皮肤（zip）…」里选一个皮肤压缩包，导入后直接换上；也可以把 Codex 宠物文件夹放进 `%USERPROFILE%\.codex\pets\` 或 `%APPDATA%\Perch\skins\`，在托盘「皮肤」菜单里选择。自己做皮肤的格式见 [docs/skin-format.md](docs/skin-format.md)。
 
 **渲染器插件**：精灵图集以外的形象（比如骨骼动画）由插件负责画，插件放在 `%APPDATA%\Perch\plugins\` 下，皮肤在 `skin.json` 里写明要用哪个渲染器，用到时才加载。插件格式见 [docs/renderer-plugin.md](docs/renderer-plugin.md)，[examples/renderer-plugin](examples/renderer-plugin) 里有一个可以直接用的示例。插件代码在桌宠窗口里运行，只安装你信任的插件。
 
