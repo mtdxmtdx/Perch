@@ -138,6 +138,8 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
 /// 否则只看这一句，免得上一个话题把新话题的记忆挤掉
 pub fn query_text(recent: &[Message]) -> String {
     let take = |m: &Message, n: usize| m.display.chars().take(n).collect::<String>();
+    // 聊天命令（@状态 等）不给模型看，也不参与检索
+    let recent: Vec<&Message> = recent.iter().filter(|m| !m.llm_text.is_empty()).collect();
     let Some((last, before)) = recent.split_last() else { return String::new() };
     let now = take(last, 500);
     match before.last() {

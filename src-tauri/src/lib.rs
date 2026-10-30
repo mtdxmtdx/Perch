@@ -9,6 +9,7 @@ mod llm;
 mod memory;
 mod pet;
 mod proactive;
+mod relation;
 mod plugins;
 mod skin;
 mod speak;
@@ -197,6 +198,8 @@ pub fn run() {
             commands::memory_list,
             commands::memory_save,
             commands::memory_delete,
+            commands::relation_get,
+            commands::relation_set,
             commands::bubble_open,
             commands::bubble_close,
             commands::bubble_resize,

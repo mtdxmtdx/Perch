@@ -134,6 +134,14 @@ impl Store {
              CREATE TABLE IF NOT EXISTS state (
                  key TEXT PRIMARY KEY,
                  value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS relations (
+                 persona TEXT PRIMARY KEY,
+                 affection REAL NOT NULL,
+                 trust REAL NOT NULL,
+                 familiarity REAL NOT NULL,
+                 mood REAL NOT NULL,
+                 updated_at INTEGER NOT NULL
              );",
         )?;
         // 旧数据库补列
@@ -325,6 +333,41 @@ impl Store {
         tx.commit()
     }
 
+    /// 和某个人格的关系；还没有记录时是默认值
+    pub fn relation(&self, persona: &str) -> crate::relation::Relation {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT affection, trust, familiarity, mood, updated_at FROM relations WHERE persona = ?1",
+            params![persona],
+            |r| {
+                Ok(crate::relation::Relation {
+                    affection: r.get(0)?,
+                    trust: r.get(1)?,
+                    familiarity: r.get(2)?,
+                    mood: r.get(3)?,
+                    updated_at: r.get(4)?,
+                })
+            },
+        )
+        .unwrap_or_default()
+    }
+
+    pub fn set_relation(&self, persona: &str, r: &crate::relation::Relation) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO relations (persona, affection, trust, familiarity, mood, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(persona) DO UPDATE SET affection = ?2, trust = ?3, familiarity = ?4, mood = ?5, updated_at = ?6",
+            params![persona, r.affection, r.trust, r.familiarity, r.mood, r.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_relation(&self, persona: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM relations WHERE persona = ?1", params![persona])?;
+        Ok(())
+    }
+
     pub fn get_state(&self, key: &str) -> Option<String> {
         let conn = self.conn.lock().unwrap();
         conn.query_row("SELECT value FROM state WHERE key = ?1", params![key], |r| r.get(0))
@@ -426,6 +469,15 @@ mod tests {
         s.update_memory(id, None, "喜欢橘猫").unwrap();
         assert!(s.memory_vectors("m1").unwrap().is_empty());
         s.replace_memories(&[("core".into(), "合并后".into())]).unwrap();
+        // 关系：没有记录时是默认值，存了能读回来，各人格分开
+        assert_eq!(s.relation("p"), crate::relation::Relation::default());
+        let r = crate::relation::Relation { affection: 70.0, trust: 40.0, familiarity: 20.0, mood: 90.0, updated_at: 5 };
+        s.set_relation("p", &r).unwrap();
+        s.set_relation("p", &r).unwrap();
+        assert_eq!(s.relation("p"), r);
+        assert_eq!(s.relation("q"), crate::relation::Relation::default());
+        s.delete_relation("p").unwrap();
+        assert_eq!(s.relation("p"), crate::relation::Relation::default());
         assert_eq!(s.memories().unwrap().len(), 1);
     }
 }

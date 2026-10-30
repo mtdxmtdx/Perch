@@ -776,6 +776,8 @@ async fn compose_with_model(app: &AppHandle, intent: &Intent) -> Result<String, 
         .history(&persona.id, None, 6)
         .map_err(|e| e.to_string())?
         .into_iter()
+        // 聊天命令（@状态 等）不算
+        .filter(|m| !m.llm_text.is_empty())
         .map(|m| {
             let who = if m.role == "user" { "用户" } else { "你" };
             format!("{who}：{}", m.display.chars().take(80).collect::<String>())
@@ -787,8 +789,14 @@ async fn compose_with_model(app: &AppHandle, intent: &Intent) -> Result<String, 
         persona.system_prompt.trim(),
         memory
     );
+    // 关系和心情影响开口的语气
+    let relation = if cfg.chat.relationship {
+        format!("\n{}。语气要符合这种关系和心情。", state.store.relation(&persona.id).note(crate::store::now_secs()))
+    } else {
+        String::new()
+    };
     let user = format!(
-        "现在是 {}。开口的原因：{}\n\n最近的对话：\n{}",
+        "现在是 {}。开口的原因：{}{relation}\n\n最近的对话：\n{}",
         crate::chat::now_label(),
         intent.reason,
         if recent.is_empty() { "（还没聊过）".to_string() } else { recent.join("\n") }
