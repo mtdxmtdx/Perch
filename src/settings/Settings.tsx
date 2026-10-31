@@ -20,10 +20,11 @@ import {
   type AgentsOverview,
   type AgentId,
   type RelationValues,
+  type TtsParams,
   type RelationView,
 } from "../shared/api";
 import { SessionList, useSessions } from "../shared/Sessions";
-import { PRESETS, providerFrom } from "../shared/presets";
+import { PRESETS, TTS_VOICES, providerFrom } from "../shared/presets";
 import "./settings.css";
 
 interface Draft {
@@ -37,6 +38,7 @@ interface Draft {
   voice: VoiceParams;
   agents: AgentsParams;
   proactive: ProactiveParams;
+  tts: TtsParams;
 }
 
 const newId = () => crypto.randomUUID().slice(0, 8);
@@ -77,7 +79,7 @@ export function Settings() {
 
   const load = async () => {
     const s = await api.settingsGet();
-    setDraft({ providers: s.providers.map(({ hasKey: _, reasoningIgnored: __, ...p }) => p), roles: s.roles, personas: s.personas, activePersona: s.activePersona, chat: s.chat, tools: s.tools, image: s.image, voice: s.voice, agents: s.agents, proactive: s.proactive });
+    setDraft({ providers: s.providers.map(({ hasKey: _, reasoningIgnored: __, ...p }) => p), roles: s.roles, personas: s.personas, activePersona: s.activePersona, chat: s.chat, tools: s.tools, image: s.image, voice: s.voice, agents: s.agents, proactive: s.proactive, tts: s.tts });
     setPicturesDir(s.picturesDir);
     setHasKey(Object.fromEntries(s.providers.map((p) => [p.id, p.hasKey])));
     setReasoningIgnored(Object.fromEntries(s.providers.map((p) => [p.id, p.reasoningIgnored])));
@@ -196,7 +198,7 @@ function ModelsTab({
     const pr = PRESETS[presetIdx];
     const p: Provider = providerFrom(pr, newId());
     // 向量模型填进"向量"用途（还没选的话），对话模型填进"主对话"
-    const role = pr.embedding ? "embedding" : "chat";
+    const role = pr.embedding ? "embedding" : pr.tts ? "tts" : "chat";
     update((d) => ({ ...d, providers: [...d.providers, p], roles: d.roles[role] ? d.roles : { ...d.roles, [role]: p.id } }));
   };
 
@@ -206,7 +208,7 @@ function ModelsTab({
       return {
         ...d,
         providers: d.providers.filter((p) => p.id !== id),
-        roles: { chat: clear(d.roles.chat), vision: clear(d.roles.vision), aux: clear(d.roles.aux), image: clear(d.roles.image), embedding: clear(d.roles.embedding) },
+        roles: { chat: clear(d.roles.chat), vision: clear(d.roles.vision), aux: clear(d.roles.aux), image: clear(d.roles.image), embedding: clear(d.roles.embedding), tts: clear(d.roles.tts) },
         personas: d.personas.map((p) => ({ ...p, provider: clear(p.provider) })),
       };
     });
@@ -217,7 +219,8 @@ function ModelsTab({
       // 只用来生图的模型不支持对话接口，测试时不能发聊天消息
       const r = draft.roles;
       const chatUse = [r.chat, r.vision, r.aux].includes(p.id) || draft.personas.some((x) => x.provider === p.id);
-      const imageOnly = r.image === p.id && !chatUse;
+      // 只用来生图或语音合成的模型不支持对话接口，测试时不能发聊天消息
+      const imageOnly = (r.image === p.id || r.tts === p.id) && !chatUse;
       // 只用来算向量的模型也不支持对话接口，直接算一条向量来验证
       const embeddingOnly = r.embedding === p.id && !chatUse && r.image !== p.id;
       const reply = await api.providerTest(p, keys[p.id], imageOnly, embeddingOnly);
@@ -242,6 +245,8 @@ function ModelsTab({
           <ProviderSelect value={draft.roles.image} providers={draft.providers} emptyLabel="（不使用）" onChange={(v) => update((d) => ({ ...d, roles: { ...d.roles, image: v } }))} />
           <label>向量（OpenAI 兼容的 /embeddings；配了就只把相关的记忆放进提示词）</label>
           <ProviderSelect value={draft.roles.embedding} providers={draft.providers} emptyLabel="（不使用，记忆全部放进提示词）" onChange={(v) => update((d) => ({ ...d, roles: { ...d.roles, embedding: v } }))} />
+          <label>语音合成（OpenAI 兼容的 /audio/speech；朗读引擎选「云端」时用，在 设置 → 语音 里开启）</label>
+          <ProviderSelect value={draft.roles.tts} providers={draft.providers} emptyLabel="（不使用）" onChange={(v) => update((d) => ({ ...d, roles: { ...d.roles, tts: v } }))} />
         </div>
       </section>
 
@@ -695,7 +700,147 @@ function VoiceTab({ draft, update }: TabProps) {
         </div>
         <p className="muted small">也可以在气泡里按住 🎤 说话。录音时按 Esc 取消。</p>
       </section>
+      <TtsSection draft={draft} update={update} />
     </div>
+  );
+}
+
+/** 语音输出（朗读）：默认不读，选了引擎才读 */
+function TtsSection({ draft, update }: TabProps) {
+  const t = draft.tts;
+  const set = (patch: Partial<TtsParams>) => update((d) => ({ ...d, tts: { ...d.tts, ...patch } }));
+  const [sample, setSample] = useState("你好呀，我是你的桌面小伙伴，今天也一起加油吧！");
+  const [test, setTest] = useState<{ ok: boolean; text: string } | "running" | null>(null);
+  const cloudModel = draft.providers.find((p) => p.id === draft.roles.tts);
+  const voices = TTS_VOICES.find(([prefix]) => cloudModel?.model.startsWith(prefix))?.[1] ?? [];
+
+  const pickRef = async () => {
+    const f = await openDialog({ title: "选择参考音频", filters: [{ name: "音频", extensions: ["wav", "mp3", "flac", "ogg", "m4a"] }] });
+    if (typeof f === "string") set({ local_ref_audio: f });
+  };
+  const runTest = async () => {
+    setTest("running");
+    try {
+      await api.ttsTest(draft, sample);
+      setTest({ ok: true, text: "读完了" });
+    } catch (e) {
+      setTest({ ok: false, text: errorText(e) });
+    }
+  };
+  const num = (value: number, min: number, max: number, step: number, onChange: (v: number) => void) => (
+    <input type="number" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Math.max(min, Math.min(max, Number(e.target.value) || min)))} />
+  );
+
+  return (
+    <section>
+      <h3>语音输出（朗读）</h3>
+      <p className="muted small">
+        默认不读。选一个朗读引擎后，桌宠会把主动说的话和对话回复的开头读出来。全屏、开会、直播时不出声；要读的文字会发给你选的服务。
+      </p>
+      <div className="grid2 params">
+        <label>朗读引擎</label>
+        <select value={t.provider} onChange={(e) => set({ provider: e.target.value, enabled: e.target.value !== "none" })}>
+          <option value="none">不朗读</option>
+          <option value="cloud">云端（OpenAI 兼容的 /audio/speech）</option>
+          <option value="local">本地服务（GPT-SoVITS 风格的接口）</option>
+        </select>
+
+        {t.provider === "cloud" && (
+          <>
+            <label>
+              语音合成模型
+              <div className="small muted">在 设置 → 模型 里添加服务商（有「语音合成」预设），选为「语音合成」用途</div>
+            </label>
+            <div className={cloudModel ? "" : "warn"}>{cloudModel ? `${cloudModel.name}（${cloudModel.model}）` : "还没选，先去「模型」页"}</div>
+            <label>
+              音色
+              <div className="small muted">按服务商文档填；留空用服务默认的</div>
+            </label>
+            <div>
+              <input list="tts-voices" style={{ width: "100%" }} value={t.voice ?? ""} placeholder={voices[0] ?? "比如 alloy"} onChange={(e) => set({ voice: e.target.value || null })} />
+              <datalist id="tts-voices">
+                {voices.map((v) => (
+                  <option key={v} value={v} />
+                ))}
+              </datalist>
+            </div>
+          </>
+        )}
+
+        {t.provider === "local" && (
+          <>
+            <label>
+              服务地址
+              <div className="small muted">GPT-SoVITS 的 api.py、BandoriPet 的 Qwen3TTS 后端等，默认 http://127.0.0.1:9880/</div>
+            </label>
+            <input value={t.local_url} onChange={(e) => set({ local_url: e.target.value })} />
+            <label>
+              参考音频
+              <div className="small muted">要模仿的声音，3～10 秒的干净人声；路径要是服务那台机器能读到的</div>
+            </label>
+            <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto" }}>
+              <input value={t.local_ref_audio ?? ""} placeholder="（未选择）" onChange={(e) => set({ local_ref_audio: e.target.value || null })} />
+              <button onClick={() => void pickRef()}>选择…</button>
+            </div>
+            <label>
+              参考音频的文字
+              <div className="small muted">可选：参考音频里说的话，填了更像</div>
+            </label>
+            <input value={t.local_ref_text ?? ""} onChange={(e) => set({ local_ref_text: e.target.value || null })} />
+            <label>
+              语言
+              <div className="small muted">参考音频 / 要读的文字的语言代码，按服务的要求填（GPT-SoVITS 用 zh、ja、en）</div>
+            </label>
+            <div className="reasoning-row" style={{ gridTemplateColumns: "1fr 1fr" }}>
+              <input list="tts-langs" value={t.local_ref_lang} onChange={(e) => set({ local_ref_lang: e.target.value })} />
+              <input list="tts-langs" value={t.local_text_lang} onChange={(e) => set({ local_text_lang: e.target.value })} />
+              <datalist id="tts-langs">
+                {["zh", "ja", "en", "auto", "Chinese", "Japanese", "English"].map((v) => (
+                  <option key={v} value={v} />
+                ))}
+              </datalist>
+            </div>
+          </>
+        )}
+
+        {t.provider !== "none" && (
+          <>
+            <label>语速 / 音量</label>
+            <div className="reasoning-row" style={{ gridTemplateColumns: "1fr 1fr" }}>
+              {num(t.speed, 0.5, 2, 0.1, (v) => set({ speed: v }))}
+              {num(t.volume, 0, 2, 0.1, (v) => set({ volume: v }))}
+            </div>
+            <label>读什么</label>
+            <div className="checks" style={{ flexDirection: "column", alignItems: "flex-start" }}>
+              <label>
+                <input type="checkbox" checked={t.read_reports} onChange={(e) => set({ read_reports: e.target.checked })} /> 主动说的话（agent 汇报、提醒、闲聊）
+              </label>
+              <label>
+                <input type="checkbox" checked={t.read_replies} onChange={(e) => set({ read_replies: e.target.checked })} /> 对话回复的开头
+              </label>
+              <label>
+                <input type="checkbox" checked={t.mute_when_quiet} onChange={(e) => set({ mute_when_quiet: e.target.checked })} /> 工作模式和免打扰时段不出声
+              </label>
+            </div>
+            <label>
+              回复最多读多少字
+              <div className="small muted">按句子截，剩下的看文字</div>
+            </label>
+            {num(t.reply_chars, 10, 500, 10, (v) => set({ reply_chars: Math.round(v) }))}
+            <label>试听</label>
+            <div>
+              <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto" }}>
+                <input value={sample} onChange={(e) => setSample(e.target.value)} />
+                <button disabled={test === "running"} onClick={() => void runTest()}>
+                  {test === "running" ? "合成中…" : "试听"}
+                </button>
+              </div>
+              {test && test !== "running" && <div className={test.ok ? "small muted" : "error"}>{test.text}</div>}
+            </div>
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 

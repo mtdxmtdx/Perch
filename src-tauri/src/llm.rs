@@ -418,7 +418,7 @@ pub async fn test_connection(ep: &Endpoint, chat_capable: bool) -> Result<String
     }
     if !chat_capable {
         return Err(format!(
-            "这个服务没有模型列表接口（HTTP {}），无法免费验证。生图模型可以直接用 /draw 画一张试试",
+            "这个服务没有模型列表接口（HTTP {}），无法免费验证。生图模型可以直接用 /draw 画一张，语音合成模型可以在 设置 → 语音 里试听",
             status.as_u16()
         ));
     }

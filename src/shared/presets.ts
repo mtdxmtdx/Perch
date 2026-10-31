@@ -10,6 +10,8 @@ export interface Preset {
   vision?: boolean;
   /** 向量模型（/embeddings），不能用来聊天 */
   embedding?: boolean;
+  /** 语音合成模型（/audio/speech），不能用来聊天 */
+  tts?: boolean;
   /** 拿 API Key 的页面 */
   keyUrl?: string;
   /** 新用户引导里的一句说明 */
@@ -61,11 +63,20 @@ export const PRESETS: Preset[] = [
   { label: "向量模型：硅基流动 bge-m3", base_url: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3", style: "openai", embedding: true },
   { label: "向量模型：通义 text-embedding-v4", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v4", style: "openai", embedding: true },
   { label: "向量模型：OpenAI text-embedding-3-small", base_url: "https://api.openai.com/v1", model: "text-embedding-3-small", style: "openai", embedding: true },
+  { label: "语音合成：硅基流动 CosyVoice2", base_url: "https://api.siliconflow.cn/v1", model: "FunAudioLLM/CosyVoice2-0.5B", style: "openai", tts: true },
+  { label: "语音合成：OpenAI gpt-4o-mini-tts", base_url: "https://api.openai.com/v1", model: "gpt-4o-mini-tts", style: "openai", tts: true },
   { label: "自定义", base_url: "https://", model: "", style: "openai" },
 ];
 
 /** 新用户引导里能选的：能聊天、地址和模型名都填好了的 */
-export const CHAT_PRESETS = PRESETS.filter((p) => !p.embedding && p.model);
+export const CHAT_PRESETS = PRESETS.filter((p) => !p.embedding && !p.tts && p.model);
+
+/** 云端朗读的音色建议（按模型名开头匹配）。以服务商文档为准，也可以自己填 */
+export const TTS_VOICES: [string, string[]][] = [
+  ["FunAudioLLM/CosyVoice2", ["anna", "bella", "claire", "diana", "alex", "benjamin", "charles", "david"].map((v) => `FunAudioLLM/CosyVoice2-0.5B:${v}`)],
+  ["gpt-", ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]],
+  ["tts-", ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]],
+];
 
 export function providerFrom(p: Preset, id: string): Provider {
   return {
