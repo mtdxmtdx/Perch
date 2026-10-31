@@ -729,6 +729,22 @@ pub fn context(app: &AppHandle, p: &ProactiveParams) -> Context {
     }
 }
 
+/// 现在出声合不合适（给朗读用）：(静默状态：全屏、开会、直播, 安静：工作模式或免打扰时段)。
+/// 不管主动聊天开没开都按同样的规则判断
+pub fn sound_state(app: &AppHandle) -> (bool, bool) {
+    let state = app.state::<AppState>();
+    let p = state.config.lock().unwrap().proactive.clone();
+    let (work_mode, fullscreen) = {
+        let s = state.shared.lock().unwrap();
+        (s.work_mode, s.fullscreen)
+    };
+    use crate::agents::model::Status;
+    let agents_busy = crate::agents::sessions(app).iter().any(|s| matches!(s.status, Status::Thinking | Status::Working));
+    let fg = crate::pet::win::foreground_process();
+    let silent = desktop_mode(&p, fullscreen, fg.as_deref(), agents_busy) == DesktopMode::Silent;
+    (silent, work_mode || in_quiet_hours(&p, Local::now().time()))
+}
+
 /// agent 汇报时调用：转给各触发器（关着时什么都不做）
 pub fn agent_signal(app: &AppHandle, signal: AgentSignal) {
     if !app.state::<AppState>().config.lock().unwrap().proactive.enabled {

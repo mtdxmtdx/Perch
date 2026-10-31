@@ -1,6 +1,6 @@
 //! M2 的前端命令：设置、对话、记忆、窗口。
 
-use crate::config::{self, AgentsParams, ChatParams, ImageParams, Persona, ProactiveParams, Provider, Roles, ToolParams, VoiceParams};
+use crate::config::{self, AgentsParams, ChatParams, ImageParams, Persona, ProactiveParams, Provider, Roles, ToolParams, TtsParams, VoiceParams};
 use crate::files::{self, AttachmentIn};
 use crate::llm::{self, Endpoint};
 use crate::store::{Memory, Message};
@@ -33,6 +33,7 @@ pub struct SettingsView {
     pub voice: VoiceParams,
     pub agents: AgentsParams,
     pub proactive: ProactiveParams,
+    pub tts: TtsParams,
     pub skins: Vec<skin::SkinEntry>,
     /// 生成的图片另存到哪
     pub pictures_dir: String,
@@ -51,6 +52,9 @@ pub struct SettingsIn {
     pub voice: VoiceParams,
     pub agents: AgentsParams,
     pub proactive: ProactiveParams,
+    /// 老版本的设置页不发这个字段：沿用原来的
+    #[serde(default)]
+    pub tts: Option<TtsParams>,
 }
 
 #[tauri::command]
@@ -75,6 +79,7 @@ pub fn settings_get(state: State<AppState>) -> SettingsView {
         voice: cfg.voice,
         agents: cfg.agents,
         proactive: cfg.proactive,
+        tts: cfg.tts,
         skins: skin::list(),
         pictures_dir: crate::tools::display(&crate::imagegen::pictures_dir()),
     }
@@ -138,6 +143,9 @@ pub fn settings_save(app: AppHandle, state: State<AppState>, settings: SettingsI
         cfg.image = settings.image;
         cfg.voice = settings.voice;
         cfg.proactive = settings.proactive;
+        if let Some(t) = settings.tts {
+            cfg.tts = t;
+        }
         // 各接入的开关由"Agent 接入"页单独控制（要改外部配置），这里只保存其余参数
         let (cc, cx, ds, onboarded) = (cfg.agents.claude_code, cfg.agents.codex, cfg.agents.dsh, cfg.agents.onboarded);
         cfg.agents = AgentsParams { claude_code: cc, codex: cx, dsh: ds, onboarded, ..settings.agents };
@@ -306,6 +314,18 @@ pub async fn skin_import(app: AppHandle, path: String, apply: Option<bool>) -> R
         .map_err(|e| e.to_string())??;
     tray::after_skin_import(&app, &entry, apply.unwrap_or(false));
     Ok(entry)
+}
+
+/// 设置页的"试听"：用还没保存的朗读设置读一句
+#[tauri::command]
+pub async fn tts_test(app: AppHandle, state: State<'_, AppState>, settings: SettingsIn, text: String) -> Result<(), String> {
+    let mut cfg = state.config.lock().unwrap().clone();
+    if let Some(t) = settings.tts {
+        cfg.tts = t;
+    }
+    cfg.roles = settings.roles;
+    cfg.providers = settings.providers;
+    crate::tts::test(&app, cfg, &text).await
 }
 
 /// 新用户引导卡片是否要显示

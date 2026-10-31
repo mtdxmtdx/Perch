@@ -62,19 +62,51 @@ impl Default for AgentsParams {
 #[serde(default)]
 pub struct TtsParams {
     pub enabled: bool,
-    /// 引擎名（见 tts::make_provider）；"none" 表示不读
+    /// 朗读引擎："none" 不读 / "cloud" OpenAI 兼容的 /audio/speech / "local" GPT-SoVITS 风格的本地服务
     pub provider: String,
-    /// 音色；为空用引擎默认的
+    /// 云端的音色（比如 alloy、FunAudioLLM/CosyVoice2-0.5B:anna）；为空用服务默认的
     pub voice: Option<String>,
-    /// 读对话回复
+    /// 语速倍数
+    pub speed: f64,
+    /// 音量倍数
+    pub volume: f64,
+    /// 读对话回复（只读开头）
     pub read_replies: bool,
+    /// 对话回复最多读多少字（按句子截）
+    pub reply_chars: usize,
     /// 读 agent 汇报和主动聊天说的话
     pub read_reports: bool,
+    /// 工作模式、免打扰时段不出声（全屏、开会、直播时总是不出声）
+    pub mute_when_quiet: bool,
+    /// 本地服务地址
+    pub local_url: String,
+    /// 参考音频的路径（本地服务那台机器上的路径）
+    pub local_ref_audio: Option<String>,
+    /// 参考音频里说的话（可选，填了更像）
+    pub local_ref_text: Option<String>,
+    pub local_ref_lang: String,
+    /// 要读的文字的语言
+    pub local_text_lang: String,
 }
 
 impl Default for TtsParams {
     fn default() -> Self {
-        Self { enabled: false, provider: "none".into(), voice: None, read_replies: true, read_reports: true }
+        Self {
+            enabled: false,
+            provider: "none".into(),
+            voice: None,
+            speed: 1.0,
+            volume: 1.0,
+            read_replies: true,
+            reply_chars: 60,
+            read_reports: true,
+            mute_when_quiet: true,
+            local_url: "http://127.0.0.1:9880/".into(),
+            local_ref_audio: None,
+            local_ref_text: None,
+            local_ref_lang: "zh".into(),
+            local_text_lang: "zh".into(),
+        }
     }
 }
 
@@ -273,6 +305,8 @@ pub struct Roles {
     pub image: Option<String>,
     /// 向量模型（OpenAI 兼容的 /embeddings）：配了就按相关度挑事件记忆，不配就全部注入
     pub embedding: Option<String>,
+    /// 语音合成（OpenAI 兼容的 /audio/speech），朗读引擎选"云端"时用
+    pub tts: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

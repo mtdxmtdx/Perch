@@ -28,6 +28,26 @@ export interface Roles {
   image: string | null;
   /** 向量模型（/embeddings），配了就按相关度挑事件记忆 */
   embedding: string | null;
+  /** 语音合成（/audio/speech），朗读引擎选"云端"时用 */
+  tts: string | null;
+}
+
+export interface TtsParams {
+  enabled: boolean;
+  /** none / cloud / local */
+  provider: string;
+  voice: string | null;
+  speed: number;
+  volume: number;
+  read_replies: boolean;
+  reply_chars: number;
+  read_reports: boolean;
+  mute_when_quiet: boolean;
+  local_url: string;
+  local_ref_audio: string | null;
+  local_ref_text: string | null;
+  local_ref_lang: string;
+  local_text_lang: string;
 }
 
 export interface DialogPair {
@@ -221,8 +241,24 @@ export interface SettingsView {
   voice: VoiceParams;
   agents: AgentsParams;
   proactive: ProactiveParams;
+  tts: TtsParams;
   skins: SkinEntry[];
   picturesDir: string;
+}
+
+/** 保存设置（和试听）时发给后端的内容 */
+export interface SettingsIn {
+  providers: Provider[];
+  roles: Roles;
+  personas: Persona[];
+  activePersona: string;
+  chat: ChatParams;
+  tools: ToolParams;
+  image: ImageParams;
+  voice: VoiceParams;
+  agents: AgentsParams;
+  proactive: ProactiveParams;
+  tts: TtsParams;
 }
 
 export interface AttachmentMeta {
@@ -285,18 +321,7 @@ export interface ApprovalRequest {
 
 export const api = {
   settingsGet: () => invoke<SettingsView>("settings_get"),
-  settingsSave: (settings: {
-    providers: Provider[];
-    roles: Roles;
-    personas: Persona[];
-    activePersona: string;
-    chat: ChatParams;
-    tools: ToolParams;
-    image: ImageParams;
-    voice: VoiceParams;
-    agents: AgentsParams;
-    proactive: ProactiveParams;
-  }) => invoke<void>("settings_save", { settings }),
+  settingsSave: (settings: SettingsIn) => invoke<void>("settings_save", { settings }),
   providerSetKey: (id: string, key: string) => invoke<void>("provider_set_key", { id, key }),
   providerTest: (provider: Provider, key?: string, imageOnly?: boolean, embeddingOnly?: boolean) =>
     invoke<string>("provider_test", { provider, key, imageOnly, embeddingOnly }),
@@ -311,6 +336,9 @@ export const api = {
   memoryList: () => invoke<Memory[]>("memory_list"),
   memorySave: (id: number | null, kind: string, content: string) => invoke<void>("memory_save", { id, kind, content }),
   memoryDelete: (id: number) => invoke<void>("memory_delete", { id }),
+  /** 用还没保存的设置试听一句 */
+  ttsTest: (settings: SettingsIn, text: string) =>
+    invoke<void>("tts_test", { settings, text }),
   skinImport: (path: string, apply = false) => invoke<SkinEntry>("skin_import", { path, apply }),
   modelSetupPending: () => invoke<boolean>("model_setup_pending"),
   modelSetupDismiss: () => invoke<void>("model_setup_dismiss"),
