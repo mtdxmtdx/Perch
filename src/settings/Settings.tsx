@@ -1137,7 +1137,7 @@ function CompanionTab({ draft, update }: TabProps) {
           </label>
         </div>
         <p className="muted small">
-          全屏、开会、对话进行中、录音时、气泡开着时不会开口；写代码时和工作模式、免打扰时段只说重要的提醒（每日提醒、就寝、久坐、agent 等你授权、节日和生日），不闲聊。主动说的话会记进当前人格的对话，你可以直接接着回。
+          对话进行中、录音时、气泡开着或手动隐藏时不会开口；开会/通话时一律不提醒。全屏、看视频时只说你勾选的重要提醒（全屏走系统通知）；写代码时和工作模式、免打扰时段只说重要的提醒，不闲聊。主动说的话会记进当前人格的对话，你可以直接接着回。
         </p>
         <div className="checks" style={{ marginTop: 6 }}>
           <label>
@@ -1261,7 +1261,7 @@ function CompanionTab({ draft, update }: TabProps) {
           <input type="number" min={5} max={1440} value={p.min_interval_minutes} onChange={(e) => set({ min_interval_minutes: Math.max(5, Number(e.target.value) || 5) })} />
           <label>
             看我在用什么程序
-            <div className="small muted">按前台程序判断：写代码时（或者 agent 在干活）只说重要的和鼓励；全屏、开会、直播时什么都不说</div>
+            <div className="small muted">按前台程序和廉价信号判断：写代码时（或者 agent 在干活）只说重要的和鼓励；开会/通话一律不说；全屏、看视频时按下方白名单放行重要提醒</div>
           </label>
           <div className="checks">
             <label>
@@ -1275,11 +1275,66 @@ function CompanionTab({ draft, update }: TabProps) {
           <ListInput value={p.focus_apps} disabled={!p.desktop_modes} onChange={(v) => set({ focus_apps: v })} />
           <label>
             算"别出声"的程序
-            <div className="small muted">开会、直播录屏等；全屏程序不用加，总是算</div>
+            <div className="small muted">开会、直播录屏等；全屏程序不用加，总是算。麦克风被占用且占用进程仍在跑时也会静默</div>
           </label>
           <ListInput value={p.silent_apps} disabled={!p.desktop_modes} onChange={(v) => set({ silent_apps: v })} />
+          <label>
+            看视频时仍提醒
+            <div className="small muted">窗口化播放且一段时间没操作时算「在看」。开会、通话时一律不提醒</div>
+          </label>
+          <TriggerChecklist
+            options={IMPORTANT_TRIGGERS}
+            value={p.media_allowed_triggers}
+            disabled={!p.desktop_modes}
+            onChange={(v) => set({ media_allowed_triggers: v })}
+          />
+          <label>
+            全屏时仍提醒（系统通知）
+            <div className="small muted">全屏时桌宠会隐藏，勾选的提醒以系统通知送达（可能进通知中心）。开会、通话时一律不提醒</div>
+          </label>
+          <TriggerChecklist
+            options={IMPORTANT_TRIGGERS}
+            value={p.fullscreen_allowed_triggers}
+            disabled={!p.desktop_modes}
+            onChange={(v) => set({ fullscreen_allowed_triggers: v })}
+          />
         </div>
       </section>
+    </div>
+  );
+}
+
+/** 可勾进白名单的重要触发器（闲聊永远不放行） */
+const IMPORTANT_TRIGGERS: { id: string; label: string }[] = [
+  { id: "sedentary", label: "久坐提醒" },
+  { id: "daily-at", label: "定时提醒" },
+  { id: "bedtime", label: "就寝提醒" },
+  { id: "agent-follow-up", label: "agent 等你授权" },
+  { id: "special-day", label: "节日和生日" },
+];
+
+function TriggerChecklist({
+  options,
+  value,
+  disabled,
+  onChange,
+}: {
+  options: { id: string; label: string }[];
+  value: string[];
+  disabled?: boolean;
+  onChange: (v: string[]) => void;
+}) {
+  const toggle = (id: string, on: boolean) => {
+    if (on) onChange([...value.filter((x) => x !== id), id]);
+    else onChange(value.filter((x) => x !== id));
+  };
+  return (
+    <div className="checks" style={{ flexDirection: "column", alignItems: "flex-start" }}>
+      {options.map((o) => (
+        <label key={o.id}>
+          <input type="checkbox" checked={value.includes(o.id)} disabled={disabled} onChange={(e) => toggle(o.id, e.target.checked)} /> {o.label}
+        </label>
+      ))}
     </div>
   );
 }

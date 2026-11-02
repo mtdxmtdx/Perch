@@ -172,6 +172,12 @@ export interface ProactiveParams {
   desktop_modes: boolean;
   focus_apps: string[];
   silent_apps: string[];
+  /** 看视频时仍提醒的重要触发器 id */
+  media_allowed_triggers: string[];
+  /** 全屏时仍提醒（系统通知）的重要触发器 id */
+  fullscreen_allowed_triggers: string[];
+  watching_idle_secs: number;
+  watching_hold_secs: number;
   encourage_minutes: number | null;
   welcome_back_minutes: number | null;
   holidays: boolean;

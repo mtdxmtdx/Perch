@@ -138,6 +138,14 @@ pub struct ProactiveParams {
     pub focus_apps: Vec<String>,
     /// 算"静默"的程序（开会、直播录屏）；全屏程序总是算静默
     pub silent_apps: Vec<String>,
+    /// 看视频（「在看」）时仍放行的重要触发器 id；闲聊 id 写进来也不放行
+    pub media_allowed_triggers: Vec<String>,
+    /// 全屏时仍放行的重要触发器 id（以系统通知送达）；闲聊 id 写进来也不放行
+    pub fullscreen_allowed_triggers: Vec<String>,
+    /// 进入「在看」：`user_idle_secs` 下限（秒）
+    pub watching_idle_secs: u64,
+    /// 退出「在看」滞回：前台持续无声秒数
+    pub watching_hold_secs: u64,
     /// 专注这么多分钟后说句鼓励；为空不启用
     pub encourage_minutes: Option<u64>,
     /// 离开电脑这么多分钟后回来时打招呼（每天早上第一次见面问早安）；为空不启用
@@ -181,6 +189,10 @@ impl Default for ProactiveParams {
                 "nvim-qt",
             ]),
             silent_apps: names(&["ms-teams", "teams", "zoom", "wemeetapp", "voovmeetingapp", "obs64", "streamlabs obs"]),
+            media_allowed_triggers: names(&["sedentary", "daily-at", "bedtime"]),
+            fullscreen_allowed_triggers: names(&["daily-at"]),
+            watching_idle_secs: 45,
+            watching_hold_secs: 30,
             encourage_minutes: Some(90),
             welcome_back_minutes: Some(60),
             holidays: true,
