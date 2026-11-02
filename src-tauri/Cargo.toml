@@ -49,6 +49,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 tauri-plugin-notification = "2"
 
 [target.'cfg(windows)'.dependencies]
+windows-capture = "1.5.0"
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",

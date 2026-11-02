@@ -17,6 +17,7 @@ import {
   type DownloadProgress,
   type AgentsParams,
   type ProactiveParams,
+  type AwarenessParams,
   type AgentsOverview,
   type AgentId,
   type RelationValues,
@@ -38,6 +39,7 @@ interface Draft {
   voice: VoiceParams;
   agents: AgentsParams;
   proactive: ProactiveParams;
+  awareness: AwarenessParams;
   tts: TtsParams;
 }
 
@@ -59,11 +61,12 @@ const STYLES: [string, string][] = [
   ["deepseek", "DeepSeek 格式（thinking + reasoning_effort）"],
 ];
 
-type Tab = "models" | "personas" | "tools" | "voice" | "agents" | "companion" | "memory" | "params" | "general";
+type Tab = "models" | "personas" | "tools" | "voice" | "agents" | "companion" | "awareness" | "memory" | "params" | "general";
 
 export function Settings() {
   const [tab, setTab] = useState<Tab>("models");
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [locked, setLocked] = useState<{ processes: string[]; titles: string[] }>({ processes: [], titles: [] });
   const [hasKey, setHasKey] = useState<Record<string, boolean>>({});
   const [reasoningIgnored, setReasoningIgnored] = useState<Record<string, boolean>>({});
   const [keys, setKeys] = useState<Record<string, string>>({});
@@ -79,7 +82,8 @@ export function Settings() {
 
   const load = async () => {
     const s = await api.settingsGet();
-    setDraft({ providers: s.providers.map(({ hasKey: _, reasoningIgnored: __, ...p }) => p), roles: s.roles, personas: s.personas, activePersona: s.activePersona, chat: s.chat, tools: s.tools, image: s.image, voice: s.voice, agents: s.agents, proactive: s.proactive, tts: s.tts });
+    setDraft({ providers: s.providers.map(({ hasKey: _, reasoningIgnored: __, ...p }) => p), roles: s.roles, personas: s.personas, activePersona: s.activePersona, chat: s.chat, tools: s.tools, image: s.image, voice: s.voice, agents: s.agents, proactive: s.proactive, awareness: s.awareness, tts: s.tts });
+    setLocked({ processes: s.captureLockedProcesses, titles: s.captureLockedTitleKeywords });
     setPicturesDir(s.picturesDir);
     setHasKey(Object.fromEntries(s.providers.map((p) => [p.id, p.hasKey])));
     setReasoningIgnored(Object.fromEntries(s.providers.map((p) => [p.id, p.reasoningIgnored])));
@@ -129,6 +133,7 @@ export function Settings() {
             ["voice", "语音"],
             ["agents", "Agent 接入"],
             ["companion", "陪伴"],
+            ["awareness", "桌面感知"],
             ["memory", "记忆"],
             ["params", "对话参数"],
             ["general", "常规"],
@@ -148,6 +153,7 @@ export function Settings() {
         {tab === "memory" && <MemoryTab />}
         {tab === "params" && <ParamsTab draft={draft} update={update} />}
         {tab === "companion" && <CompanionTab draft={draft} update={update} />}
+        {tab === "awareness" && <AwarenessTab draft={draft} update={update} locked={locked} />}
         {tab === "general" && <GeneralTab />}
       </main>
       {tab !== "memory" && (
@@ -1109,6 +1115,78 @@ function MemoryEditor({ edit, setEdit, save }: { edit: { id: number | null; kind
         保存
       </button>
       <button onClick={() => setEdit(null)}>取消</button>
+    </div>
+  );
+}
+
+
+/** 桌面感知：按需看屏授权与名单 */
+function AwarenessTab({ draft, update, locked }: TabProps & { locked: { processes: string[]; titles: string[] } }) {
+  const a = draft.awareness;
+  const set = (patch: Partial<AwarenessParams>) => update((d) => ({ ...d, awareness: { ...d.awareness, ...patch } }));
+  return (
+    <div className="tab">
+      <section>
+        <h3>按需看屏</h3>
+        <p className="muted small">
+          授权后，对话模型可以在你明确要求「看看屏幕」时调用 see_screen 截取最近一个不属于 Perch 的前台窗口。
+          截图会发给你配置的对话/视觉模型；聊天记录只留长边 320 的缩略图，原图不落盘。支付、银行、密码管理器等窗口在锁死名单里，无法截取。默认关闭。
+        </p>
+        <div className="checks">
+          <label>
+            <input type="checkbox" checked={a.vision_tool} onChange={(e) => set({ vision_tool: e.target.checked })} /> 提供看屏工具（see_screen）
+          </label>
+          <label>
+            <input type="checkbox" checked={a.vision_authorized} onChange={(e) => set({ vision_authorized: e.target.checked })} /> 允许看屏（授权一次即可，不逐次弹窗）
+          </label>
+        </div>
+        <div className="grid2 params" style={{ marginTop: 10 }}>
+          <label>
+            截图长边（像素）
+            <div className="small muted">面积平均缩放；0 表示不缩放。常用 1280 / 1600</div>
+          </label>
+          <input
+            type="number"
+            min={0}
+            max={4096}
+            value={a.see_screen_long_side}
+            onChange={(e) => set({ see_screen_long_side: Math.max(0, Number(e.target.value) || 0) })}
+          />
+        </div>
+      </section>
+
+      <section>
+        <h3>截图白名单模式</h3>
+        <div className="checks">
+          <label>
+            <input
+              type="checkbox"
+              checked={a.capture_whitelist_mode}
+              onChange={(e) => set({ capture_whitelist_mode: e.target.checked })}
+            />{" "}
+            只截白名单里的进程（锁死名单仍优先）
+          </label>
+        </div>
+        <label className="small muted">进程名，不带 .exe，逗号或换行分隔</label>
+        <ListInput value={a.capture_whitelist} disabled={!a.capture_whitelist_mode} onChange={(v) => set({ capture_whitelist: v })} />
+      </section>
+
+      <section>
+        <h3>用户拦截名单</h3>
+        <p className="muted small">进程名或标题关键字（如无痕）。预置了常见聊天应用与无痕关键字，可删可加。拒绝原因不会带上窗口标题。</p>
+        <ListInput value={a.capture_blocklist_user} onChange={(v) => set({ capture_blocklist_user: v })} />
+      </section>
+
+      <section>
+        <h3>锁死名单（只读）</h3>
+        <p className="muted small">支付 / 银行 / 密码管理器。代码常量，设置无法清空。</p>
+        <div className="grid2 params">
+          <label>进程</label>
+          <textarea rows={4} readOnly value={locked.processes.join(", ")} />
+          <label>标题关键字</label>
+          <textarea rows={3} readOnly value={locked.titles.join(", ")} />
+        </div>
+      </section>
     </div>
   );
 }

@@ -350,6 +350,10 @@ impl Ctl {
 
         if now - self.snap.at >= SNAPSHOT_EVERY {
             self.snap = surfaces::snapshot(self.pid, rect.h());
+            // 记录最近一个不属于 Perch 的前台窗口，供 see_screen 使用
+            if let Some((hwnd, pid, name)) = foreground_non_self(self.pid) {
+                crate::awareness::note_foreground(hwnd, pid, &name);
+            }
             if self.debug && now - self.last_debug >= Duration::from_secs(5) {
                 self.last_debug = now;
                 let list: Vec<String> = self
@@ -671,4 +675,19 @@ pub fn spawn(app: AppHandle, shared: SharedState) {
             std::thread::sleep(TICK);
         }
     });
+}
+
+/// 前台窗口若不属于本进程，返回 (hwnd, pid, process_name)
+fn foreground_non_self(self_pid: u32) -> Option<(isize, u32, String)> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let fg = unsafe { GetForegroundWindow() }.0 as isize;
+    if fg == 0 {
+        return None;
+    }
+    let pid = win::window_pid(fg);
+    if pid == 0 || pid == self_pid {
+        return None;
+    }
+    let name = win::process_name(pid)?;
+    Some((fg, pid, name))
 }

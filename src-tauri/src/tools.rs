@@ -11,8 +11,14 @@ const MAX_READ_CHARS: usize = 60_000;
 const MAX_DIR_ENTRIES: usize = 500;
 const MAX_DIFF_CHARS: usize = 20_000;
 
+
+/// 是否应把 see_screen 放进工具列表（还需对话模型支持 tools；由调用方再与 dirs/生图一起决定 tools_on）
+pub fn see_screen_enabled(vision_tool: bool, vision_authorized: bool, has_image_capable_model: bool) -> bool {
+    vision_tool && vision_authorized && has_image_capable_model
+}
+
 /// 提供给模型的工具定义（OpenAI tools 格式）
-pub fn definitions(with_image: bool) -> Value {
+pub fn definitions(with_image: bool, with_see_screen: bool) -> Value {
     let mut tools = vec![
         json!({ "type": "function", "function": {
             "name": "read_file",
@@ -49,6 +55,15 @@ pub fn definitions(with_image: bool) -> Value {
             "parameters": { "type": "object", "properties": {
                 "prompt": { "type": "string", "description": "详细的画面描述（主体、风格、构图、色调），用用户的语言或英文" }
             }, "required": ["prompt"] }
+        }}));
+    }
+    if with_see_screen {
+        tools.push(json!({ "type": "function", "function": {
+            "name": "see_screen",
+            "description": "看一眼用户正在用的窗口画面。只在用户明确要求看屏幕、看看我在干什么、读一下窗口内容时调用；不要自己主动调用。默认截当前工作窗口（最近一个不属于 Perch 的前台窗口）。用户问的是弹窗、菜单、对话框时，请传 scope: \"screen\"（窗口捕获不含这些独立层）。",
+            "parameters": { "type": "object", "properties": {
+                "scope": { "type": "string", "enum": ["window", "screen"], "description": "window=只截目标窗口（默认）；screen=截该窗口所在整块屏（弹窗/菜单/对话框时用）" }
+            } }
         }}));
     }
     Value::Array(tools)
@@ -461,5 +476,58 @@ mod tests {
         assert!(c.old.is_none());
         assert!(c.diff().contains("+hello"));
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+
+#[cfg(test)]
+mod see_screen_tests {
+    use super::*;
+
+    fn names(v: &serde_json::Value) -> Vec<&str> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.pointer("/function/name").and_then(|x| x.as_str()))
+            .collect()
+    }
+
+    #[test]
+    #[test]
+    fn see_screen_enabled_requires_auth_and_model() {
+        assert!(!see_screen_enabled(true, false, true));
+        assert!(!see_screen_enabled(false, true, true));
+        assert!(!see_screen_enabled(true, true, false));
+        assert!(see_screen_enabled(true, true, true));
+    }
+
+    #[test]
+    fn see_screen_only_when_flagged() {
+        let n = names(&definitions(false, false));
+        assert!(!n.contains(&"see_screen"));
+        assert!(!n.contains(&"generate_image"));
+        let n = names(&definitions(true, true));
+        assert!(n.contains(&"see_screen"));
+        assert!(n.contains(&"generate_image"));
+        let n = names(&definitions(false, true));
+        assert!(n.contains(&"see_screen"));
+        assert!(!n.contains(&"generate_image"));
+    }
+
+    #[test]
+    fn see_screen_description_mentions_user_ask_and_screen_scope() {
+        let defs = definitions(false, true);
+        let desc = defs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t.pointer("/function/name").and_then(|x| x.as_str()) == Some("see_screen"))
+            .unwrap()
+            .pointer("/function/description")
+            .and_then(|x| x.as_str())
+            .unwrap();
+        assert!(desc.contains("只在用户明确要求"));
+        assert!(desc.contains("scope"));
+        assert!(desc.contains("screen") || desc.contains("弹窗"));
     }
 }

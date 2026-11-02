@@ -136,6 +136,16 @@ pub fn refresh_menu(app: &AppHandle) {
     }
 }
 
+
+/// 看屏时在托盘提示里标一下；关掉时恢复默认
+pub fn refresh_tooltip(app: &AppHandle, seeing: bool) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let tip = if seeing { "Perch · 正在看屏" } else { "Perch" };
+        let _ = tray.set_tooltip(Some(tip));
+    }
+}
+
+
 /// 按皮肤格子大小和缩放比例设置桌宠窗口大小
 pub fn apply_size(app: &AppHandle) {
     let state = app.state::<AppState>();

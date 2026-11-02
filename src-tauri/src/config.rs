@@ -28,6 +28,8 @@ pub struct Config {
     pub tts: TtsParams,
     /// 主动聊天、提醒（见 proactive.rs）
     pub proactive: ProactiveParams,
+    /// 桌面感知：按需看屏等（见 awareness/）
+    pub awareness: AwarenessParams,
 }
 
 /// 接入 Claude Code / Codex / DeepSeek Harness，汇报它们的工作状态
@@ -106,6 +108,40 @@ impl Default for TtsParams {
             local_ref_text: None,
             local_ref_lang: "zh".into(),
             local_text_lang: "zh".into(),
+        }
+    }
+}
+
+
+/// 桌面感知（按需看屏）。锁死名单是代码常量，不在这里。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AwarenessParams {
+    /// 是否提供 see_screen 工具（需同时已授权）
+    pub vision_tool: bool,
+    /// 设置里勾选「允许看屏」
+    pub vision_authorized: bool,
+    /// 截图长边像素；0 表示不缩放
+    pub see_screen_long_side: u32,
+    /// 开启后只截白名单里的进程（锁死名单仍优先）
+    pub capture_whitelist_mode: bool,
+    /// 白名单进程名（不带 .exe）
+    pub capture_whitelist: Vec<String>,
+    /// 用户拦截：进程名或标题关键字（预置聊天应用与无痕关键字，可删可加）
+    pub capture_blocklist_user: Vec<String>,
+}
+
+impl Default for AwarenessParams {
+    fn default() -> Self {
+        let mut block = crate::awareness::gate::default_blocklist_processes();
+        block.extend(crate::awareness::gate::default_blocklist_title_keywords());
+        Self {
+            vision_tool: false,
+            vision_authorized: false,
+            see_screen_long_side: 1280,
+            capture_whitelist_mode: false,
+            capture_whitelist: Vec::new(),
+            capture_blocklist_user: block,
         }
     }
 }
