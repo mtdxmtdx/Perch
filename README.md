@@ -31,6 +31,7 @@ Perch 平时站在任务栏和窗口的顶边上，走来走去、跳上跳下�
 - 可以发图片（主模型看不了图时由视觉模型转述）和文件（文本、PDF、docx）。
 - 支持推理强度设置，不支持的模型自动忽略。
 - **主动聊天和提醒**（可选，默认关闭，在「设置 → 陪伴」里打开）：很久没聊天时找你说两句，离开后回来打招呼、早上问早安，写代码久了鼓励一句；节日（含农历节日）、生日、纪念日问候；久坐、就寝、每日定时提醒，agent 一直等你授权时再提一次。话由模型按人格口吻写，也可以只用固定话术。看前台程序判断你在干什么：全屏、开会、直播时一句不说，写代码时不闲聊；对话中、录音时不打扰；工作模式和免打扰时段只说重要的提醒。
+- **桌面感知**（可选，默认关闭，在「设置 → 桌面感知」里打开）：授权后可在对话里按需看屏（`see_screen`）；也可让主动聊天在冷却与门禁允许时偶尔看一眼屏幕当闲聊素材。支付/银行/密码管理器等锁死不可截；聊天记录只留缩略图，原图不落盘；窗口标题默认不上传。详见 [第三方声明](THIRD_PARTY_NOTICES.md) 与 [手动测试矩阵](docs/desktop-awareness-manual-tests.md)。
 
 **工具与生图**
 - 内置读、写、编辑文件三个工具，只能访问白名单目录；读文件不打扰，写入和编辑会在气泡里显示 diff 等你确认。没有 shell。
@@ -98,12 +99,15 @@ cargo test --lib
 - 换了运行库文件夹要重启程序才生效。
 - 只支持 Windows。
 - 预留了接口、尚未实现：在桌宠里审批 agent 授权、本地生图。
+- 桌面感知：窗口捕获（WGC）不含独立弹出的右键菜单/部分对话框，问这些内容时请用整屏（`scope: "screen"`）；全屏时的系统通知可能被 Windows 勿扰静默进通知中心——需要气泡提醒时可在托盘关掉「全屏时自动隐藏」。
 
 ## 致谢
 
 - [Tauri](https://tauri.app/)
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0）
 - 语音模型 [SenseVoice](https://github.com/FunAudioLLM/SenseVoice) 和 [Silero VAD](https://github.com/snakers4/silero-vad) 在运行时下载，不随本仓库分发，使用时请遵守各自的许可证。
+- 桌面感知画面变化打分移植自 [dsh-see-now](https://github.com/SAOS-3624/dsh-see-now)（Apache-2.0，`cuts.js` 的 `gridRgb` / `rgbToHsv` / `scorePair`；提交见 `THIRD_PARTY_NOTICES.md`）；算法原始出处亦见同作者 [dsh-video-storyboard](https://github.com/SAOS-3624/dsh-video-storyboard)。Windows 截屏使用 [windows-capture](https://crates.io/crates/windows-capture)（MIT）。
+- **本仓库当前版本的桌面感知实现不含任何 GPL 代码**（含 bandori-pet-rev 等仅作思路参考，干净室自写）。完整第三方义务见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - 设计上参考了 BongoCat、clawd-on-desk、VPet、DyberPet 等桌宠项目（只参考设计，没有使用它们的代码）。
 
 ## 许可证

@@ -1132,6 +1132,7 @@ function AwarenessTab({ draft, update, locked }: TabProps & { locked: { processe
         <p className="muted small">
           授权后，对话模型可以在你明确要求「看看屏幕」时调用 see_screen 截取最近一个不属于 Perch 的前台窗口。
           截图会发给你配置的对话/视觉模型；聊天记录只留长边 320 的缩略图，原图不落盘。支付、银行、密码管理器等窗口在锁死名单里，无法截取。默认关闭。
+          窗口捕获不含独立弹出的右键菜单、下拉框或部分对话框——问这些内容时让模型用整屏（scope: "screen"）。
         </p>
         <div className="checks">
           <label>
@@ -1159,8 +1160,9 @@ function AwarenessTab({ draft, update, locked }: TabProps & { locked: { processe
       <section>
         <h3>主动看屏（闲聊）</h3>
         <p className="muted small">
-          作为闲聊触发器 screen-glance：受主动聊天冷却、免打扰与静默规则约束。最短间隔默认 10 分钟，每天最多 30 次。
+          作为闲聊触发器 screen-glance：受主动聊天冷却、免打扰与静默规则约束。最短间隔默认 10 分钟，每天最多 30 次（按所用模型计费，可调）。
           规则命中或窗口切换后的显著画面变化才会看一眼；走与按需看屏相同的门禁。默认关闭。
+          「上传窗口标题」默认关；被门禁拦住的窗口即使打开也不会上传标题。
         </p>
         <div className="checks">
           <label>
@@ -1449,7 +1451,7 @@ function CompanionTab({ draft, update }: TabProps) {
           />
           <label>
             全屏时仍提醒（系统通知）
-            <div className="small muted">全屏时桌宠会隐藏，勾选的提醒以系统通知送达（可能进通知中心）。开会、通话时一律不提醒</div>
+            <div className="small muted">全屏时桌宠会隐藏，勾选的提醒以系统通知送达（Win11 勿扰常默认开着，可能静默进通知中心）。想强提醒可在托盘关掉「全屏时自动隐藏」，提醒会走气泡。开会、通话时一律不提醒</div>
           </label>
           <TriggerChecklist
             options={IMPORTANT_TRIGGERS}

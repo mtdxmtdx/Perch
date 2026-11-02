@@ -177,4 +177,23 @@ mod tests {
         assert!(!is_significant(11.9));
         assert!(is_significant(12.0));
     }
+
+    /// 性能抽样：64×36 score_pair 应远快于交互预算（保守上限 50ms/次，防回退）
+    #[test]
+    fn perf_sample_score_pair() {
+        let w = 128u32;
+        let h = 72u32;
+        let a = hsv_of(&solid_rgb(w, h, 255.0, 0.0, 0.0), w, h);
+        let b = hsv_of(&solid_rgb(w, h, 0.0, 0.0, 255.0), w, h);
+        let t0 = std::time::Instant::now();
+        let mut last = 0.0f32;
+        for _ in 0..200 {
+            last = score_pair(&a, &b);
+        }
+        let elapsed = t0.elapsed();
+        let per = elapsed / 200;
+        eprintln!("[perf] score_pair ×200 = {elapsed:?} (≈{per:?}/call) last={last}");
+        assert!(per.as_millis() < 50, "score_pair too slow: {per:?}");
+        assert!(last > 0.0);
+    }
 }

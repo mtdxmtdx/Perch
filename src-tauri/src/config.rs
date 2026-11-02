@@ -629,6 +629,49 @@ mod migrate_tests {
     }
 }
 
+#[cfg(test)]
+mod awareness_serde_tests {
+    use super::*;
+
+    /// 老配置缺少 M2/M3 字段时，serde(default) 填入安全默认（全关、标题不上传）
+    #[test]
+    fn awareness_missing_fields_get_safe_defaults() {
+        let v: AwarenessParams = serde_json::from_str("{}").unwrap();
+        assert!(!v.vision_tool);
+        assert!(!v.vision_authorized);
+        assert!(!v.include_title);
+        assert!(!v.proactive_vision);
+        assert_eq!(v.vision_min_interval_minutes, 10);
+        assert_eq!(v.vision_daily_cap, 30);
+        assert!(v.vision_on_significant_change);
+        assert!(v.vision_process_rules.is_empty());
+    }
+
+    #[test]
+    fn proactive_media_defaults_include_bedtime() {
+        let p = ProactiveParams::default();
+        assert!(p.media_allowed_triggers.iter().any(|s| s == "bedtime"));
+        assert!(p.fullscreen_allowed_triggers.iter().any(|s| s == "daily-at"));
+        assert!(!p.fullscreen_allowed_triggers.iter().any(|s| s == "long-no-chat"));
+    }
+
+    #[test]
+    fn config_roundtrip_keeps_m3_fields() {
+        let mut c = Config::default();
+        c.awareness.include_title = true;
+        c.awareness.proactive_vision = true;
+        c.awareness.vision_process_rules = vec![VisionProcessRule {
+            process: "code".into(),
+            title_keyword: Some("main".into()),
+        }];
+        let s = serde_json::to_string(&c).unwrap();
+        let back: Config = serde_json::from_str(&s).unwrap();
+        assert!(back.awareness.include_title);
+        assert!(back.awareness.proactive_vision);
+        assert_eq!(back.awareness.vision_process_rules[0].process, "code");
+    }
+}
+
 fn config_path() -> PathBuf {
     data_dir().join("config.json")
 }

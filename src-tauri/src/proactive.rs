@@ -1073,6 +1073,8 @@ async fn speak_intent(app: &AppHandle, intent: &Intent) {
             crate::speak::say(app, &persona.name, &text, crate::speak::Source::Proactive, false);
         }
     }
+    // 模板回退或 Abort 后的路径也可能没 take 掉附图缓存
+    *GLANCE_PNG.lock().unwrap() = None;
 }
 
 fn mark_spoken() {
