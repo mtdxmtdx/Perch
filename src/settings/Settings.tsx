@@ -18,6 +18,7 @@ import {
   type AgentsParams,
   type ProactiveParams,
   type AwarenessParams,
+  type VisionProcessRule,
   type AgentsOverview,
   type AgentId,
   type RelationValues,
@@ -1153,6 +1154,86 @@ function AwarenessTab({ draft, update, locked }: TabProps & { locked: { processe
             onChange={(e) => set({ see_screen_long_side: Math.max(0, Number(e.target.value) || 0) })}
           />
         </div>
+      </section>
+
+      <section>
+        <h3>主动看屏（闲聊）</h3>
+        <p className="muted small">
+          作为闲聊触发器 screen-glance：受主动聊天冷却、免打扰与静默规则约束。最短间隔默认 10 分钟，每天最多 30 次。
+          规则命中或窗口切换后的显著画面变化才会看一眼；走与按需看屏相同的门禁。默认关闭。
+        </p>
+        <div className="checks">
+          <label>
+            <input
+              type="checkbox"
+              checked={a.proactive_vision}
+              onChange={(e) => set({ proactive_vision: e.target.checked })}
+              disabled={!a.vision_authorized}
+            />{" "}
+            主动聊天可以看屏（需已授权看屏）
+          </label>
+          <label>
+            <input type="checkbox" checked={a.include_title} onChange={(e) => set({ include_title: e.target.checked })} />{" "}
+            写话时附带前台程序名和窗口标题（最多 140 字；被门禁拦住的不给）
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={a.vision_on_significant_change}
+              onChange={(e) => set({ vision_on_significant_change: e.target.checked })}
+              disabled={!a.proactive_vision}
+            />{" "}
+            窗口/标题变化时比对画面是否显著再看
+          </label>
+        </div>
+        <div className="grid2 params" style={{ marginTop: 10 }}>
+          <label>
+            最短间隔（分钟）
+            <div className="small muted">两次主动看屏至少隔这么久</div>
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={1440}
+            value={a.vision_min_interval_minutes}
+            disabled={!a.proactive_vision}
+            onChange={(e) => set({ vision_min_interval_minutes: Math.max(1, Number(e.target.value) || 1) })}
+          />
+          <label>
+            每日上限
+            <div className="small muted">今天主动看屏次数封顶</div>
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={200}
+            value={a.vision_daily_cap}
+            disabled={!a.proactive_vision}
+            onChange={(e) => set({ vision_daily_cap: Math.max(1, Number(e.target.value) || 1) })}
+          />
+        </div>
+        <label className="small muted" style={{ marginTop: 8, display: "block" }}>
+          进程规则（每行：进程名，可选 | 标题关键字）。例：code 或 chrome|YouTube
+        </label>
+        <textarea
+          rows={4}
+          disabled={!a.proactive_vision}
+          value={a.vision_process_rules
+            .map((r) => (r.title_keyword ? `${r.process}|${r.title_keyword}` : r.process))
+            .join("\n")}
+          onChange={(e) => {
+            const rules: VisionProcessRule[] = e.target.value
+              .split(/\n|,/)
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line) => {
+                const [process, ...rest] = line.split("|");
+                const kw = rest.join("|").trim();
+                return { process: process.trim(), title_keyword: kw ? kw : null };
+              });
+            set({ vision_process_rules: rules });
+          }}
+        />
       </section>
 
       <section>

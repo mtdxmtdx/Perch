@@ -237,6 +237,11 @@ export interface SkinEntry {
 }
 
 
+export interface VisionProcessRule {
+  process: string;
+  title_keyword?: string | null;
+}
+
 export interface AwarenessParams {
   vision_tool: boolean;
   vision_authorized: boolean;
@@ -244,6 +249,12 @@ export interface AwarenessParams {
   capture_whitelist_mode: boolean;
   capture_whitelist: string[];
   capture_blocklist_user: string[];
+  include_title: boolean;
+  proactive_vision: boolean;
+  vision_min_interval_minutes: number;
+  vision_daily_cap: number;
+  vision_process_rules: VisionProcessRule[];
+  vision_on_significant_change: boolean;
 }
 
 export interface SettingsView {

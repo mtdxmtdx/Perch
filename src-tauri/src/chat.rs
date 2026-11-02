@@ -556,13 +556,31 @@ fn tool_note(allowed: &[PathBuf], with_image: bool, with_see: bool) -> String {
 
 /// 桌宠主动说的话记进对话：用户回复时，模型知道自己刚说了什么
 pub(crate) fn add_assistant_message(app: &AppHandle, persona: &str, text: &str) -> Result<(), String> {
+    add_assistant_message_with_atts(app, persona, text, &[])
+}
+
+pub(crate) fn add_assistant_message_with_atts(
+    app: &AppHandle,
+    persona: &str,
+    text: &str,
+    atts: &[AttachmentMeta],
+) -> Result<(), String> {
     let msg = app
         .state::<AppState>()
         .store
-        .insert_message(persona, "assistant", text, text, &[])
+        .insert_message(persona, "assistant", text, text, atts)
         .map_err(|e| e.to_string())?;
     emit(app, ChatEvent::Added { persona: persona.to_string(), message: msg });
     Ok(())
+}
+
+/// 主动看屏：复用视觉转述（给 proactive 用）
+pub(crate) async fn describe_image_for_proactive(
+    ep: &Endpoint,
+    file: &str,
+    user_text: &str,
+) -> Result<String, String> {
+    describe_image(ep, file, user_text).await
 }
 
 /// 正在回复中（主动聊天据此判断能不能打扰）
