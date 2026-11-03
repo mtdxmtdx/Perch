@@ -275,7 +275,19 @@ Apache License
    limitations under the License.
 ```
 
+## dsh-video-storyboard（scorePair 原始出处）
+
+- 项目：https://github.com/SAOS-3624/dsh-video-storyboard
+- 许可：Apache License 2.0
+- 用法：未直接移植文件；`scorePair` 算法与 dsh-see-now 同源，按上游要求一并署名。
+
+## windows-capture（WGC 封装）
+
+- crates.io：`windows-capture` 1.5.x（MIT）
+- 用法：Windows 下按需截取窗口/屏幕；源码不 vendoring，随 Cargo 依赖拉取。完整许可文本见该 crate 的 `LICENSE`。
+
 ## 说明
 
-- BANDORI-PET-REV 等仓库仅作思路参考，本里程碑未复制其代码。
-- windows-capture 等依赖的许可以各自 crate / Cargo 声明为准；本文件只覆盖主动移植进仓库的第三方源码。
+- [bandori-pet-rev](https://github.com/)（GPL-3.0）等仓库**仅作思路参考**；桌面感知相关代码均为干净室自写，**不含任何 GPL 源码**。
+- 本文件收录主动移植进仓库的第三方源码义务（Apache-2.0）。其它 Cargo 依赖的许可以各自 crate 声明为准。
+- 安装包通过 Tauri `bundle.resources` 附带本文件副本。

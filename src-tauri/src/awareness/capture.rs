@@ -569,4 +569,19 @@ mod tests {
         assert_eq!(Scope::parse(Some("screen")), Scope::Screen);
         assert_eq!(Scope::parse(Some("WINDOW")), Scope::Window);
     }
+
+    /// 性能抽样（耗时随机器浮动，默认跳过）：cargo test --release -- --ignored perf_sample
+    #[test]
+    #[ignore]
+    fn perf_sample_downscale() {
+        let w = 1920u32;
+        let h = 1080u32;
+        let rgba = vec![40u8; (w * h * 4) as usize];
+        let t0 = std::time::Instant::now();
+        let (out, ow, oh) = downscale_area_average(&rgba, w, h, 1280);
+        let elapsed = t0.elapsed();
+        eprintln!("[perf] downscale 1920x1080→{ow}x{oh} = {elapsed:?} bytes={}", out.len());
+        assert_eq!(ow, 1280);
+        assert!(elapsed.as_millis() < 500, "downscale too slow: {elapsed:?}");
+    }
 }
