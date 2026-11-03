@@ -258,7 +258,7 @@ impl Default for ProactiveParams {
                 "nvim-qt",
             ]),
             silent_apps: names(&["ms-teams", "teams", "zoom", "wemeetapp", "voovmeetingapp", "obs64", "streamlabs obs"]),
-            media_allowed_triggers: names(&["sedentary", "daily-at", "bedtime"]),
+            media_allowed_triggers: names(&["sedentary", "daily-at"]),
             fullscreen_allowed_triggers: names(&["daily-at"]),
             watching_idle_secs: 45,
             watching_hold_secs: 30,
@@ -492,6 +492,7 @@ impl Default for Config {
             voice: VoiceParams::default(),
             tts: TtsParams::default(),
             proactive: ProactiveParams::default(),
+            awareness: AwarenessParams::default(),
             agents: AgentsParams::default(),
         }
     }

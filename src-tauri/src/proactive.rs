@@ -883,7 +883,8 @@ pub fn start(app: &AppHandle) {
 /// 轮询一次：关着就清空触发器；按打扰规则问允许开口的触发器
 fn tick(app: &AppHandle) -> Option<Intent> {
     let (p, a) = {
-        let cfg = app.state::<AppState>().config.lock().unwrap();
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
         (cfg.proactive.clone(), cfg.awareness.clone())
     };
     let mut rt = RUNTIME.lock().unwrap();
@@ -958,7 +959,8 @@ pub fn context(app: &AppHandle, p: &ProactiveParams) -> Context {
         (false, false)
     };
     let (mode, silent) = desktop_mode(p, fullscreen, fg.as_deref(), agents_busy, in_call, watching);
-    let away_secs = if matches!(silent, Some(SilentReason::Watching)) { 0 } else { idle };
+    // 在看（含全屏看视频）都算在电脑前：看完一部电影碰鼠标不算「离开归来」
+    let away_secs = if watching { 0 } else { idle };
     let (fg_process, fg_title) = fg_window_info();
     Context {
         now,
@@ -1032,7 +1034,8 @@ pub fn agent_signal(app: &AppHandle, signal: AgentSignal) {
 /// 把念头写成话，记进对话，说出来。screen-glance 失败不占冷却；闲聊 NO_SPEAK 占冷却但不说。
 async fn speak_intent(app: &AppHandle, intent: &Intent) {
     let (use_model, awareness) = {
-        let cfg = app.state::<AppState>().config.lock().unwrap();
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
         (cfg.proactive.use_model, cfg.awareness.clone())
     };
     let mut intent = intent.clone();
@@ -1762,23 +1765,25 @@ mod tests {
     }
 
     #[test]
-    fn watching_whitelist_allows_sedentary_daily_bedtime() {
+    fn watching_whitelist_allows_sedentary_and_daily_by_default() {
         let p = ProactiveParams::default();
         let mut c = ctx(12, 0, 0, None);
         c.mode = DesktopMode::Silent;
         c.silent = Some(SilentReason::Watching);
         c.away_secs = 0;
-        for id in ["sedentary", "daily-at", "bedtime"] {
+        for id in ["sedentary", "daily-at"] {
             assert!(allowed(&stub(id, true, false), &c, &p, false), "{id}");
         }
+        assert!(!allowed(&stub("bedtime", true, false), &c, &p, false)); // 就寝默认不勾，可在设置里勾
         for id in ["encourage", "welcome-back", "long-no-chat"] {
             assert!(!allowed(&stub(id, false, id == "encourage"), &c, &p, false), "{id}");
         }
     }
 
     #[test]
-    fn watching_bedtime_allowed_with_defaults() {
-        let p = ProactiveParams::default();
+    fn watching_bedtime_allowed_when_checked() {
+        let mut p = ProactiveParams::default();
+        p.media_allowed_triggers.push("bedtime".into());
         let mut c = ctx(23, 40, 60, None);
         c.mode = DesktopMode::Silent;
         c.silent = Some(SilentReason::Watching);

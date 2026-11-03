@@ -8,7 +8,6 @@ use crate::config::AwarenessParams;
 #[derive(Clone, Debug)]
 pub struct WindowInfo {
     pub hwnd: isize,
-    pub pid: u32,
     /// 不带 .exe，小写
     pub process: String,
     /// 本地比对用；不会出现在拒绝原因里
@@ -189,7 +188,7 @@ mod tests {
     use super::*;
 
     fn win(process: &str, title: &str) -> WindowInfo {
-        WindowInfo { hwnd: 1, pid: 1, process: process.into(), title: title.into() }
+        WindowInfo { hwnd: 1, process: process.into(), title: title.into() }
     }
 
     fn params() -> AwarenessParams {
