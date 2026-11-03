@@ -120,16 +120,6 @@ pub enum GlanceKind {
 }
 
 
-fn intent(trigger: &'static str, important: bool, reason: impl Into<String>, fallback: impl Into<String>) -> Intent {
-    Intent {
-        trigger,
-        important,
-        reason: reason.into(),
-        fallback: fallback.into(),
-        glance_kind: None,
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentSignalKind {
     Done,
@@ -670,8 +660,8 @@ impl ProactiveTrigger for SpecialDay {
 
 // ---------- 主动看屏 screen-glance（闲聊） ----------
 
-/// 变化不显著时，同一窗口切换场景至多每 5 分钟再试一次
-const GLANCE_CHANGE_RETRY_SECS: u64 = 5 * 60;
+/// 一次没看成（门禁、截图失败、变化不显著）后，至少隔这么久再试
+const GLANCE_RETRY_SECS: u64 = 5 * 60;
 
 /// 主动看屏：规则命中或画面显著变化时，在写话阶段截一帧当素材
 pub struct ScreenGlance {
@@ -719,6 +709,11 @@ impl ProactiveTrigger for ScreenGlance {
         if proc.is_empty() {
             return None;
         }
+        // 上次尝试（被门禁拦、截图失败、变化不显著）后至少隔 5 分钟再试，免得每 30 秒闪一次「正在看屏」
+        let retry_ok = st.last_try.is_none_or(|t| t.elapsed() >= Duration::from_secs(GLANCE_RETRY_SECS));
+        if !retry_ok {
+            return None;
+        }
         if glance_rule_hit(&self.rules, &proc, &title) {
             return Some(Intent {
                 trigger: self.id(),
@@ -733,21 +728,13 @@ impl ProactiveTrigger for ScreenGlance {
         if self.on_change {
             let changed = proc != st.last_proc || title != st.last_title;
             if changed {
-                let retry_ok = st
-                    .last_change_try
-                    .map(|t| t.elapsed() >= Duration::from_secs(GLANCE_CHANGE_RETRY_SECS))
-                    .unwrap_or(true);
-                if retry_ok || st.last_hsv.is_none() {
-                    return Some(Intent {
-                        trigger: self.id(),
-                        important: false,
-                        glance_kind: Some(GlanceKind::ChangeCheck),
-                        reason: format!(
-                            "用户刚切到「{proc}」，看一眼画面有没有值得接一句的变化；不要复述隐私内容"
-                        ),
-                        fallback: "换了个窗口呀～".into(),
-                    });
-                }
+                return Some(Intent {
+                    trigger: self.id(),
+                    important: false,
+                    glance_kind: Some(GlanceKind::ChangeCheck),
+                    reason: format!("用户刚切到「{proc}」，看一眼画面有没有值得接一句的变化；不要复述隐私内容"),
+                    fallback: "换了个窗口呀～".into(),
+                });
             }
         }
         None
@@ -1040,6 +1027,8 @@ async fn speak_intent(app: &AppHandle, intent: &Intent) {
     };
     let mut intent = intent.clone();
     let mut atts: Vec<crate::store::AttachmentMeta> = Vec::new();
+    // 辅助模型能看图时，截图直接附在写话请求里（只在内存里）
+    let mut image: Option<Vec<u8>> = None;
 
     if intent.trigger == "screen-glance" {
         match prepare_screen_glance(app, &mut intent, &awareness).await {
@@ -1047,7 +1036,8 @@ async fn speak_intent(app: &AppHandle, intent: &Intent) {
                 eprintln!("[proactive] screen-glance 放弃（门禁/不显著/不可用），不占冷却");
                 return;
             }
-            GlanceOutcome::Ready { thumb_file, process, record } => {
+            GlanceOutcome::Ready { thumb_file, process, record, png } => {
+                image = png;
                 atts.push(crate::store::AttachmentMeta {
                     kind: "image".into(),
                     name: format!("看屏 · {process}"),
@@ -1062,9 +1052,15 @@ async fn speak_intent(app: &AppHandle, intent: &Intent) {
 
     let title_note = title_material_for_prompt(&awareness);
 
-    match compose(app, &intent, use_model, title_note.as_deref()).await {
+    match compose(app, &intent, use_model, title_note.as_deref(), image.as_deref()).await {
         None => {
             mark_spoken();
+            // 这句没说，缩略图也不留
+            for a in &atts {
+                if let Some(f) = &a.file {
+                    let _ = std::fs::remove_file(crate::files::attachments_dir().join(f));
+                }
+            }
             eprintln!("[proactive] NO_SPEAK（{}），进入冷却", intent.trigger);
         }
         Some(text) => {
@@ -1088,6 +1084,8 @@ enum GlanceOutcome {
         thumb_file: String,
         process: String,
         record: String,
+        /// 辅助模型能看图时的原图；否则已转述进 intent.reason
+        png: Option<Vec<u8>>,
     },
 }
 
@@ -1100,15 +1098,27 @@ async fn prepare_screen_glance(
     if !(awareness.proactive_vision && awareness.vision_authorized) {
         return GlanceOutcome::Abort;
     }
+    // 先看有没有模型能看图，没有就不截
+    let (use_model, aux_sees, vision) = {
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
+        let persona = cfg.active_persona();
+        let aux_sees = cfg.aux_provider(&persona).is_some_and(|p| p.supports_vision);
+        let vision = cfg.provider(cfg.roles.vision.as_deref()).filter(|p| p.supports_vision).cloned();
+        (cfg.proactive.use_model, aux_sees, vision)
+    };
+    if !use_model || (!aux_sees && vision.is_none()) {
+        eprintln!("[proactive] 没有能看图的模型（或关了「用模型写」），放弃 screen-glance");
+        GLANCE_STATE.lock().unwrap().last_try = Some(Instant::now());
+        return GlanceOutcome::Abort;
+    }
     let cfg = awareness.clone();
     let kind = intent.glance_kind.unwrap_or(GlanceKind::Rule);
+    GLANCE_STATE.lock().unwrap().last_try = Some(Instant::now());
     crate::awareness::set_seeing(true);
     let _ = app.emit("seeing-screen", true);
     crate::tray::refresh_tooltip(app, true);
-    let captured = tokio::task::spawn_blocking(move || {
-        crate::awareness::capture(crate::awareness::Scope::Window, &cfg)
-    })
-    .await;
+    let captured = tokio::task::spawn_blocking(move || crate::awareness::capture(crate::awareness::Scope::Window, &cfg)).await;
     crate::awareness::set_seeing(false);
     let _ = app.emit("seeing-screen", false);
     crate::tray::refresh_tooltip(app, false);
@@ -1117,9 +1127,6 @@ async fn prepare_screen_glance(
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             eprintln!("[proactive] screen-glance 截屏失败：{e}");
-            if kind == GlanceKind::ChangeCheck {
-                GLANCE_STATE.lock().unwrap().last_change_try = Some(Instant::now());
-            }
             return GlanceOutcome::Abort;
         }
         Err(e) => {
@@ -1131,7 +1138,6 @@ async fn prepare_screen_glance(
     {
         let mut st = GLANCE_STATE.lock().unwrap();
         if kind == GlanceKind::ChangeCheck {
-            st.last_change_try = Some(Instant::now());
             if let Some(prev) = st.last_hsv.as_ref() {
                 let score = crate::awareness::score_pair(prev, &shot.hsv_grid);
                 if !crate::awareness::is_significant(score) {
@@ -1141,15 +1147,13 @@ async fn prepare_screen_glance(
             }
         }
         st.last_hsv = Some(shot.hsv_grid.clone());
-    }
-
-    if let Ok(w) = crate::awareness::capture::resolve_target() {
-        let mut st = GLANCE_STATE.lock().unwrap();
-        st.last_proc = w.process.clone();
-        st.last_title = w.title.clone();
-    } else {
-        let mut st = GLANCE_STATE.lock().unwrap();
-        st.last_proc = shot.process.clone();
+        match crate::awareness::capture::resolve_target() {
+            Ok(w) => {
+                st.last_proc = w.process;
+                st.last_title = w.title;
+            }
+            Err(_) => st.last_proc = shot.process.clone(),
+        }
     }
 
     let thumb_file = match crate::files::save_image(&shot.thumb_png, "png") {
@@ -1161,40 +1165,30 @@ async fn prepare_screen_glance(
     };
     let record = format!("看了「{}」的窗口（{}×{}）", shot.process, shot.width, shot.height);
 
-    let state = app.state::<AppState>();
-    let full_cfg = state.config.lock().unwrap().clone();
-    let persona = full_cfg.active_persona();
-    if let Some(aux) = full_cfg.aux_provider(&persona).filter(|p| p.supports_vision) {
-        let _ = aux;
-        *GLANCE_PNG.lock().unwrap() = Some(shot.png.clone());
-        intent.reason = format!("{}。{}", record, intent.reason);
-    } else if let Some(vision) = full_cfg
-        .provider(full_cfg.roles.vision.as_deref())
-        .filter(|p| p.supports_vision)
-    {
-        let tmp = match crate::files::save_image(&shot.png, "png") {
-            Ok(f) => f,
-            Err(_) => return GlanceOutcome::Abort,
-        };
-        let ep = crate::llm::Endpoint::from_provider(vision);
-        let described = crate::chat::describe_image_for_proactive(
-            &ep,
-            &tmp,
-            &format!("桌面「{}」窗口", shot.process),
-        )
-        .await;
-        let _ = std::fs::remove_file(crate::files::attachments_dir().join(&tmp));
-        match described {
-            Ok(text) => intent.reason = format!("{}。画面转述：{text}", record),
-            Err(e) => {
-                eprintln!("[proactive] 视觉转述失败：{e}");
-                return GlanceOutcome::Abort;
+    let png = match vision.filter(|_| !aux_sees) {
+        // 辅助模型自己能看图：原图直接附在写话请求里
+        None => {
+            intent.reason = format!("{}。{}", record, intent.reason);
+            Some(shot.png)
+        }
+        // 否则先让视觉模型转述成文字
+        Some(vision) => {
+            use base64::Engine;
+            let url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&shot.png));
+            let ep = crate::llm::Endpoint::from_provider(&vision);
+            match crate::chat::describe_image_url(&ep, url, &format!("桌面「{}」窗口", shot.process)).await {
+                Ok(text) => {
+                    intent.reason = format!("{}。画面转述：{text}", record);
+                    None
+                }
+                Err(e) => {
+                    eprintln!("[proactive] 视觉转述失败：{e}");
+                    let _ = std::fs::remove_file(crate::files::attachments_dir().join(&thumb_file));
+                    return GlanceOutcome::Abort;
+                }
             }
         }
-    } else {
-        eprintln!("[proactive] 没有能看图的模型，放弃 screen-glance");
-        return GlanceOutcome::Abort;
-    }
+    };
 
     {
         let mut st = GLANCE_STATE.lock().unwrap();
@@ -1206,17 +1200,10 @@ async fn prepare_screen_glance(
         st.glances_today += 1;
         st.last_success = Some(Instant::now());
         let store = &app.state::<AppState>().store;
-        let _ = store.set_state(
-            "proactive:screen-glance",
-            &format!("{}:{}", st.day, st.glances_today),
-        );
+        let _ = store.set_state("proactive:screen-glance", &format!("{}:{}", st.day, st.glances_today));
     }
 
-    GlanceOutcome::Ready {
-        thumb_file,
-        process: shot.process,
-        record,
-    }
+    GlanceOutcome::Ready { thumb_file, process: shot.process, record, png }
 }
 
 struct GlanceState {
@@ -1226,7 +1213,8 @@ struct GlanceState {
     last_proc: String,
     last_title: String,
     last_hsv: Option<Vec<f32>>,
-    last_change_try: Option<Instant>,
+    /// 上次尝试看屏的时间（不管成没成）
+    last_try: Option<Instant>,
 }
 
 static GLANCE_STATE: Mutex<GlanceState> = Mutex::new(GlanceState {
@@ -1236,9 +1224,8 @@ static GLANCE_STATE: Mutex<GlanceState> = Mutex::new(GlanceState {
     last_proc: String::new(),
     last_title: String::new(),
     last_hsv: None,
-    last_change_try: None,
+    last_try: None,
 });
-static GLANCE_PNG: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 fn title_material_for_prompt(a: &crate::config::AwarenessParams) -> Option<String> {
     if !a.include_title {
@@ -1256,9 +1243,10 @@ pub async fn compose(
     intent: &Intent,
     use_model: bool,
     title_note: Option<&str>,
+    image: Option<&[u8]>,
 ) -> Option<String> {
     if use_model {
-        match compose_with_model(app, intent, title_note).await {
+        match compose_with_model(app, intent, title_note, image).await {
             Ok(t) if is_no_speak(&t) => {
                 if intent.important {
                     return Some(intent.fallback.clone());
@@ -1277,6 +1265,7 @@ async fn compose_with_model(
     app: &AppHandle,
     intent: &Intent,
     title_note: Option<&str>,
+    image: Option<&[u8]>,
 ) -> Result<String, String> {
     use crate::llm::{self, ChatMessage, Endpoint, ImageUrl, Part};
     use crate::memory;
@@ -1330,8 +1319,7 @@ async fn compose_with_model(
             recent.join("\n")
         }
     );
-    let png = GLANCE_PNG.lock().unwrap().take();
-    let messages = if let Some(png) = png.filter(|_| provider.supports_vision) {
+    let messages = if let Some(png) = image.filter(|_| provider.supports_vision) {
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
         let url = format!("data:image/png;base64,{b64}");
@@ -1935,6 +1923,18 @@ mod tests {
             st.glances_today = 30;
         }
         assert!(g.poll(&c).is_none(), "daily cap");
+
+        // 上次没看成（门禁、截图失败、变化不显著）：5 分钟内不再试
+        {
+            let mut st = GLANCE_STATE.lock().unwrap();
+            st.glances_today = 0;
+            st.last_success = None;
+            st.last_try = Some(std::time::Instant::now());
+        }
+        assert!(g.poll(&c).is_none(), "retry backoff");
+        GLANCE_STATE.lock().unwrap().last_try = Some(std::time::Instant::now() - std::time::Duration::from_secs(GLANCE_RETRY_SECS));
+        assert!(g.poll(&c).is_some());
+        GLANCE_STATE.lock().unwrap().last_try = None;
     }
 
     #[test]

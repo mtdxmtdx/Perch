@@ -7,7 +7,7 @@
 - 项目：https://github.com/SAOS-3624/dsh-see-now
 - 提交：`9bb7df44ee6e7b9d52c34373092e79fd90850641`（release 0.0.5）
 - 许可：Apache License 2.0
-- 用法：仅移植 `src/cuts.js` 中的 `gridAvg`、`rgbToHsv`、`scorePair` 至 `src-tauri/src/awareness/cuts.rs`（由 JavaScript 改为 Rust，snake_case，并增加 RGBA 入口与显著阈值常量）。**未**移植其余管线。
+- 用法：仅移植 `src/cuts.js` 中的 `gridRgb`、`rgbToHsv`、`scorePair` 至 `src-tauri/src/awareness/cuts.rs`（由 JavaScript 改为 Rust，snake_case，并增加 RGBA 入口与显著阈值常量）。**未**移植其余管线。
 - `scorePair` 算法亦见于同一作者的 dsh-video-storyboard（`scan.js`，Apache-2.0），一并署名。
 
 ### NOTICE（来自上游）
