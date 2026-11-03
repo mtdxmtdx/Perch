@@ -35,6 +35,8 @@ pub struct Shot {
     pub process: String,
     pub width: u32,
     pub height: u32,
+    /// 缩放后画面的 64×36 HSV 网格（主动看屏变化比对用）
+    pub hsv_grid: Vec<f32>,
 }
 
 /// 控制器记录的最近非 Perch 前台窗口
@@ -212,7 +214,8 @@ pub fn prepare_shot(bgra_or_rgba: &[u8], w: u32, h: u32, long_side: u32, is_bgra
     let png = encode_png_rgba(&scaled, sw, sh)?;
     let (thumb, tw, th) = downscale_area_average(&scaled, sw, sh, 320);
     let thumb_png = encode_png_rgba(&thumb, tw, th)?;
-    Ok(Shot { png, thumb_png, process: String::new(), width: sw, height: sh })
+    let hsv_grid = crate::awareness::cuts::hsv_grid_from_rgba(&scaled, sw, sh);
+    Ok(Shot { png, thumb_png, process: String::new(), width: sw, height: sh, hsv_grid })
 }
 
 /// 解析目标窗口；失败返回门禁错误

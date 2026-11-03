@@ -17,7 +17,7 @@ use crate::AppState;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, NaiveTime, Timelike};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// 触发器判断时能看到的情况
 #[derive(Clone, Debug)]
@@ -43,6 +43,10 @@ pub struct Context {
     pub silent: Option<SilentReason>,
     /// 多久不在电脑前：在看时为 0，否则等于 user_idle_secs
     pub away_secs: u64,
+    /// 前台进程名（不带 .exe）；主动看屏/标题素材用
+    pub fg_process: Option<String>,
+    /// 前台窗口标题（本地用；上传受 include_title + 门禁约束）
+    pub fg_title: Option<String>,
 }
 
 /// 桌面上在干什么（按前台程序与廉价信号判断）
@@ -96,11 +100,25 @@ pub fn desktop_mode(
 pub struct Intent {
     /// 哪个触发器给的
     pub trigger: &'static str,
+    /// 重要提醒（影响 NO_SPEAK 回退模板）
+    pub important: bool,
     /// 为什么想说（给模型当素材）
     pub reason: String,
     /// 不用模型、或模型失败时直接说的话
     pub fallback: String,
+    /// screen-glance：规则命中直接看；变化检测需再打分
+    pub glance_kind: Option<GlanceKind>,
 }
+
+/// 主动看屏意图子类
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlanceKind {
+    /// 进程/标题规则命中
+    Rule,
+    /// 窗口切走后做一次变化比对
+    ChangeCheck,
+}
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentSignalKind {
@@ -200,6 +218,8 @@ impl ProactiveTrigger for LongNoChat {
             self.armed = false;
             return Some(Intent {
                 trigger: self.id(),
+                important: self.important(),
+                glance_kind: None,
                 reason: format!("用户已经 {} 分钟没和你说话了，但一直在用电脑。找个轻松的话题打个招呼", minutes(since)),
                 fallback: "在忙什么呀？要不要歇一会儿，陪我聊两句～".into(),
             });
@@ -240,6 +260,8 @@ impl ProactiveTrigger for DailyAt {
         let label = self.label.trim();
         Some(Intent {
             trigger: self.id(),
+                important: self.important(),
+                glance_kind: None,
             reason: format!("到了用户设的 {at} 的提醒：{}。提醒用户这件事", if label.is_empty() { "（没写内容）" } else { label }),
             fallback: if label.is_empty() { format!("到 {at} 啦～") } else { format!("提醒你：{label}") },
         })
@@ -282,6 +304,8 @@ impl ProactiveTrigger for Sedentary {
         let m = minutes(used);
         Some(Intent {
             trigger: self.id(),
+                important: self.important(),
+                glance_kind: None,
             reason: format!("用户已经连续用了 {m} 分钟电脑，中间没怎么休息。提醒用户起来活动、喝水、看看远处"),
             fallback: format!("已经连续坐了 {m} 分钟啦，起来活动一下、喝口水吧～"),
         })
@@ -340,6 +364,8 @@ impl ProactiveTrigger for Bedtime {
         let now = ctx.now.format("%H:%M");
         Some(Intent {
             trigger: self.id(),
+                important: self.important(),
+                glance_kind: None,
             reason: format!("已经 {now} 了，过了用户设的睡觉时间（{}），用户还在用电脑。温柔地催用户早点休息（这是今晚第 {} 次提醒）", self.at.format("%H:%M"), self.count),
             fallback: format!("已经 {now} 啦，早点休息吧～"),
         })
@@ -381,6 +407,8 @@ impl ProactiveTrigger for AgentFollowUp {
         let place = if s.project.is_empty() { String::new() } else { format!("（项目「{}」）", s.project) };
         Some(Intent {
             trigger: self.id(),
+                important: self.important(),
+                glance_kind: None,
             reason: format!("{}{place}在等用户授权，已经等了 {waited} 分钟，用户还没去处理。提醒用户去看看", s.agent),
             fallback: format!("{} 还在等你授权哦，记得去看看～", s.agent),
         })
@@ -429,6 +457,8 @@ impl ProactiveTrigger for Encourage {
         let m = minutes(used);
         Some(Intent {
             trigger: self.id(),
+                important: self.important(),
+                glance_kind: None,
             reason: format!(
                 "用户已经专注写代码（或者和 AI 编程助手一起干活）{m} 分钟了。说一句简短真诚的鼓励或打气；\
 不要劝休息（休息另有提醒），不要提问打断思路"
@@ -490,6 +520,8 @@ impl ProactiveTrigger for WelcomeBack {
             self.greeted = Some(today);
             return Some(Intent {
                 trigger: self.id(),
+                important: self.important(),
+                glance_kind: None,
                 reason: "早上，今天第一次见到用户。道声早安，可以顺口关心一句今天的安排或者睡得好不好".into(),
                 fallback: "早上好呀～今天也一起加油吧！".into(),
             });
@@ -498,6 +530,8 @@ impl ProactiveTrigger for WelcomeBack {
         let gone = duration_text(secs);
         Some(Intent {
             trigger: self.id(),
+                important: self.important(),
+                glance_kind: None,
             reason: format!("用户离开电脑大约 {gone}，刚回来。欢迎用户回来，简短自然"),
             fallback: "欢迎回来～".into(),
         })
@@ -609,6 +643,8 @@ impl ProactiveTrigger for SpecialDay {
         let what: Vec<String> = events.into_iter().map(|(r, _)| r).collect();
         Some(Intent {
             trigger: self.id(),
+                important: self.important(),
+                glance_kind: None,
             reason: format!("{}。向用户送上一两句应景的祝福或问候", what.join("；")),
             fallback,
         })
@@ -621,8 +657,136 @@ impl ProactiveTrigger for SpecialDay {
     }
 }
 
+
+// ---------- 主动看屏 screen-glance（闲聊） ----------
+
+/// 一次没看成（门禁、截图失败、变化不显著）后，至少隔这么久再试
+const GLANCE_RETRY_SECS: u64 = 5 * 60;
+
+/// 主动看屏：规则命中或画面显著变化时，在写话阶段截一帧当素材
+pub struct ScreenGlance {
+    pub min_interval_secs: u64,
+    pub daily_cap: u32,
+    pub rules: Vec<crate::config::VisionProcessRule>,
+    pub on_change: bool,
+}
+
+impl ScreenGlance {
+    pub fn new(a: &crate::config::AwarenessParams) -> Self {
+        Self {
+            min_interval_secs: a.vision_min_interval_minutes.max(1) * 60,
+            daily_cap: a.vision_daily_cap.max(1),
+            rules: a.vision_process_rules.clone(),
+            on_change: a.vision_on_significant_change,
+        }
+    }
+}
+
+impl ProactiveTrigger for ScreenGlance {
+    fn id(&self) -> &'static str {
+        "screen-glance"
+    }
+    fn poll(&mut self, ctx: &Context) -> Option<Intent> {
+        let today = ctx.now.format("%Y-%m-%d").to_string();
+        {
+            let mut st = GLANCE_STATE.lock().unwrap();
+            if st.day != today {
+                st.day = today.clone();
+                st.glances_today = 0;
+            }
+        }
+        let st = GLANCE_STATE.lock().unwrap();
+        if !glance_caps_allow(
+            st.glances_today,
+            self.daily_cap,
+            st.last_success.map(|t| t.elapsed().as_secs()),
+            self.min_interval_secs,
+        ) {
+            return None;
+        }
+        let proc = ctx.fg_process.clone().unwrap_or_default();
+        let title = ctx.fg_title.clone().unwrap_or_default();
+        if proc.is_empty() {
+            return None;
+        }
+        // 上次尝试（被门禁拦、截图失败、变化不显著）后至少隔 5 分钟再试，免得每 30 秒闪一次「正在看屏」
+        let retry_ok = st.last_try.is_none_or(|t| t.elapsed() >= Duration::from_secs(GLANCE_RETRY_SECS));
+        if !retry_ok {
+            return None;
+        }
+        if glance_rule_hit(&self.rules, &proc, &title) {
+            return Some(Intent {
+                trigger: self.id(),
+                important: false,
+                glance_kind: Some(GlanceKind::Rule),
+                reason: format!(
+                    "看了一眼用户正在用的「{proc}」窗口，根据画面内容打招呼或接一句；不要复述隐私内容"
+                ),
+                fallback: "你在忙什么呀～".into(),
+            });
+        }
+        if self.on_change {
+            let changed = proc != st.last_proc || title != st.last_title;
+            if changed {
+                return Some(Intent {
+                    trigger: self.id(),
+                    important: false,
+                    glance_kind: Some(GlanceKind::ChangeCheck),
+                    reason: format!("用户刚切到「{proc}」，看一眼画面有没有值得接一句的变化；不要复述隐私内容"),
+                    fallback: "换了个窗口呀～".into(),
+                });
+            }
+        }
+        None
+    }
+    fn saved(&self) -> Option<String> {
+        let st = GLANCE_STATE.lock().unwrap();
+        Some(format!("{}:{}", st.day, st.glances_today))
+    }
+    fn restore(&mut self, saved: &str) {
+        if let Some((d, n)) = saved.split_once(':') {
+            let mut st = GLANCE_STATE.lock().unwrap();
+            st.day = d.to_string();
+            st.glances_today = n.parse().unwrap_or(0);
+        }
+    }
+}
+
+/// 纯逻辑：主动看屏间隔与每日上限（供单测）
+pub fn glance_caps_allow(
+    glances_today: u32,
+    daily_cap: u32,
+    secs_since_last: Option<u64>,
+    min_interval_secs: u64,
+) -> bool {
+    if glances_today >= daily_cap {
+        return false;
+    }
+    match secs_since_last {
+        Some(s) if s < min_interval_secs => false,
+        _ => true,
+    }
+}
+
+/// 规则是否命中（进程名小写比对；标题关键字本地包含）
+pub fn glance_rule_hit(rules: &[crate::config::VisionProcessRule], proc: &str, title: &str) -> bool {
+    let proc_n = proc.trim().trim_end_matches(".exe").to_lowercase();
+    for r in rules {
+        let rp = r.process.trim().trim_end_matches(".exe").to_lowercase();
+        if rp.is_empty() || rp != proc_n {
+            continue;
+        }
+        match r.title_keyword.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            None => return true,
+            Some(k) if title.to_lowercase().contains(&k.to_lowercase()) => return true,
+            Some(_) => {}
+        }
+    }
+    false
+}
+
 /// 按配置建触发器（顺序就是优先级：重要的在前）
-pub fn build_triggers(p: &ProactiveParams) -> Vec<Box<dyn ProactiveTrigger>> {
+pub fn build_triggers(p: &ProactiveParams, a: &crate::config::AwarenessParams) -> Vec<Box<dyn ProactiveTrigger>> {
     let time = |s: &str| NaiveTime::parse_from_str(s.trim(), "%H:%M").ok();
     let mut v: Vec<Box<dyn ProactiveTrigger>> = Vec::new();
     for d in &p.daily {
@@ -657,6 +821,10 @@ pub fn build_triggers(p: &ProactiveParams) -> Vec<Box<dyn ProactiveTrigger>> {
     }
     if let Some(m) = p.no_chat_minutes.filter(|m| *m > 0) {
         v.push(Box::new(LongNoChat::new(m * 60)));
+    }
+    // 主动看屏：需开关 + 已授权；有能看图的模型在 speak 阶段再校验
+    if a.proactive_vision && a.vision_authorized {
+        v.push(Box::new(ScreenGlance::new(a)));
     }
     v
 }
@@ -701,7 +869,11 @@ pub fn start(app: &AppHandle) {
 
 /// 轮询一次：关着就清空触发器；按打扰规则问允许开口的触发器
 fn tick(app: &AppHandle) -> Option<Intent> {
-    let p = app.state::<AppState>().config.lock().unwrap().proactive.clone();
+    let (p, a) = {
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
+        (cfg.proactive.clone(), cfg.awareness.clone())
+    };
     let mut rt = RUNTIME.lock().unwrap();
     if !p.enabled {
         rt.triggers.clear();
@@ -709,9 +881,13 @@ fn tick(app: &AppHandle) -> Option<Intent> {
         return None;
     }
     let store = &app.state::<AppState>().store;
-    let key = serde_json::to_string(&p).unwrap_or_default();
+    let key = format!(
+        "{}|{}",
+        serde_json::to_string(&p).unwrap_or_default(),
+        serde_json::to_string(&a).unwrap_or_default()
+    );
     if rt.params.as_deref() != Some(key.as_str()) {
-        rt.triggers = build_triggers(&p);
+        rt.triggers = build_triggers(&p, &a);
         // 接上重启前的状态（比如今天已经问候过了）
         for t in rt.triggers.iter_mut() {
             if let Some(saved) = store.get_state(&format!("proactive:{}", t.id())) {
@@ -734,8 +910,8 @@ fn tick(app: &AppHandle) -> Option<Intent> {
         t.observe(&ctx);
     }
     let cooling = rt.last_spoken.is_some_and(|t| t.elapsed() < Duration::from_secs(p.min_interval_minutes * 60));
-    let intent = rt
-        .triggers
+    // 冷却改在成功开口 / 闲聊 NO_SPEAK 之后写入，避免 screen-glance 被拦或变化不显著时误占冷却
+    rt.triggers
         .iter_mut()
         .filter(|t| allowed(t.as_ref(), &ctx, &p, cooling))
         .find_map(|t| {
@@ -744,11 +920,7 @@ fn tick(app: &AppHandle) -> Option<Intent> {
                 store.set_state(&format!("proactive:{}", t.id()), &saved);
             }
             Some(i)
-        });
-    if intent.is_some() {
-        rt.last_spoken = Some(Instant::now());
-    }
-    intent
+        })
 }
 
 /// 收集当前情况
@@ -776,6 +948,7 @@ pub fn context(app: &AppHandle, p: &ProactiveParams) -> Context {
     let (mode, silent) = desktop_mode(p, fullscreen, fg.as_deref(), agents_busy, in_call, watching);
     // 在看（含全屏看视频）都算在电脑前：看完一部电影碰鼠标不算「离开归来」
     let away_secs = if watching { 0 } else { idle };
+    let (fg_process, fg_title) = fg_window_info();
     Context {
         now,
         user_idle_secs: idle,
@@ -788,6 +961,27 @@ pub fn context(app: &AppHandle, p: &ProactiveParams) -> Context {
         mode,
         silent,
         away_secs,
+        fg_process,
+        fg_title,
+    }
+}
+
+fn fg_window_info() -> (Option<String>, Option<String>) {
+    #[cfg(windows)]
+    {
+        match crate::awareness::capture::resolve_target() {
+            Ok(w) => (Some(w.process), Some(w.title)),
+            Err(_) => (crate::pet::win::foreground_process(), None),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let t = crate::awareness::target_record();
+        if t.hwnd != 0 {
+            (Some(t.process), None)
+        } else {
+            (None, None)
+        }
     }
 }
 
@@ -824,69 +1018,331 @@ pub fn agent_signal(app: &AppHandle, signal: AgentSignal) {
     }
 }
 
-/// 把念头写成话，记进对话，说出来
+/// 把念头写成话，记进对话，说出来。screen-glance 失败不占冷却；闲聊 NO_SPEAK 占冷却但不说。
 async fn speak_intent(app: &AppHandle, intent: &Intent) {
-    let use_model = app.state::<AppState>().config.lock().unwrap().proactive.use_model;
-    let text = compose(app, intent, use_model).await;
-    let persona = app.state::<AppState>().config.lock().unwrap().active_persona();
-    if let Err(e) = crate::chat::add_assistant_message(app, &persona.id, &text) {
-        eprintln!("[proactive] 记进对话失败：{e}");
+    let (use_model, awareness) = {
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
+        (cfg.proactive.use_model, cfg.awareness.clone())
+    };
+    let mut intent = intent.clone();
+    let mut atts: Vec<crate::store::AttachmentMeta> = Vec::new();
+    // 辅助模型能看图时，截图直接附在写话请求里（只在内存里）
+    let mut image: Option<Vec<u8>> = None;
+
+    if intent.trigger == "screen-glance" {
+        match prepare_screen_glance(app, &mut intent, &awareness).await {
+            GlanceOutcome::Abort => {
+                eprintln!("[proactive] screen-glance 放弃（门禁/不显著/不可用），不占冷却");
+                return;
+            }
+            GlanceOutcome::Ready { thumb_file, process, record, png } => {
+                image = png;
+                atts.push(crate::store::AttachmentMeta {
+                    kind: "image".into(),
+                    name: format!("看屏 · {process}"),
+                    file: Some(thumb_file),
+                    desc: Some(record.clone()),
+                    note: Some(record),
+                    call: None,
+                });
+            }
+        }
     }
-    crate::speak::say(app, &persona.name, &text, crate::speak::Source::Proactive, false);
+
+    let title_note = title_material_for_prompt(&awareness);
+
+    match compose(app, &intent, use_model, title_note.as_deref(), image.as_deref()).await {
+        None => {
+            mark_spoken();
+            // 这句没说，缩略图也不留
+            for a in &atts {
+                if let Some(f) = &a.file {
+                    let _ = std::fs::remove_file(crate::files::attachments_dir().join(f));
+                }
+            }
+            eprintln!("[proactive] NO_SPEAK（{}），进入冷却", intent.trigger);
+        }
+        Some(text) => {
+            mark_spoken();
+            let persona = app.state::<AppState>().config.lock().unwrap().active_persona();
+            if let Err(e) = crate::chat::add_assistant_message_with_atts(app, &persona.id, &text, &atts) {
+                eprintln!("[proactive] 记进对话失败：{e}");
+            }
+            crate::speak::say(app, &persona.name, &text, crate::speak::Source::Proactive, false);
+        }
+    }
 }
 
-/// 念头 → 一两句话：默认让辅助模型用人格的口吻写；没有模型、失败或关掉了"用模型写"时用模板
-pub async fn compose(app: &AppHandle, intent: &Intent, use_model: bool) -> String {
+fn mark_spoken() {
+    RUNTIME.lock().unwrap().last_spoken = Some(Instant::now());
+}
+
+enum GlanceOutcome {
+    Abort,
+    Ready {
+        thumb_file: String,
+        process: String,
+        record: String,
+        /// 辅助模型能看图时的原图；否则已转述进 intent.reason
+        png: Option<Vec<u8>>,
+    },
+}
+
+/// 写话阶段截屏：门禁 + 可选变化打分；成功则带缩略图
+async fn prepare_screen_glance(
+    app: &AppHandle,
+    intent: &mut Intent,
+    awareness: &crate::config::AwarenessParams,
+) -> GlanceOutcome {
+    if !(awareness.proactive_vision && awareness.vision_authorized) {
+        return GlanceOutcome::Abort;
+    }
+    // 先看有没有模型能看图，没有就不截
+    let (use_model, aux_sees, vision) = {
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
+        let persona = cfg.active_persona();
+        let aux_sees = cfg.aux_provider(&persona).is_some_and(|p| p.supports_vision);
+        let vision = cfg.provider(cfg.roles.vision.as_deref()).filter(|p| p.supports_vision).cloned();
+        (cfg.proactive.use_model, aux_sees, vision)
+    };
+    if !use_model || (!aux_sees && vision.is_none()) {
+        eprintln!("[proactive] 没有能看图的模型（或关了「用模型写」），放弃 screen-glance");
+        GLANCE_STATE.lock().unwrap().last_try = Some(Instant::now());
+        return GlanceOutcome::Abort;
+    }
+    let cfg = awareness.clone();
+    let kind = intent.glance_kind.unwrap_or(GlanceKind::Rule);
+    GLANCE_STATE.lock().unwrap().last_try = Some(Instant::now());
+    crate::awareness::set_seeing(true);
+    let _ = app.emit("seeing-screen", true);
+    crate::tray::refresh_tooltip(app, true);
+    let captured = tokio::task::spawn_blocking(move || crate::awareness::capture(crate::awareness::Scope::Window, &cfg)).await;
+    crate::awareness::set_seeing(false);
+    let _ = app.emit("seeing-screen", false);
+    crate::tray::refresh_tooltip(app, false);
+
+    let shot = match captured {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            eprintln!("[proactive] screen-glance 截屏失败：{e}");
+            return GlanceOutcome::Abort;
+        }
+        Err(e) => {
+            eprintln!("[proactive] screen-glance 任务失败：{e}");
+            return GlanceOutcome::Abort;
+        }
+    };
+
+    {
+        let mut st = GLANCE_STATE.lock().unwrap();
+        if kind == GlanceKind::ChangeCheck {
+            if let Some(prev) = st.last_hsv.as_ref() {
+                let score = crate::awareness::score_pair(prev, &shot.hsv_grid);
+                if !crate::awareness::is_significant(score) {
+                    eprintln!("[proactive] screen-glance 变化不显著（score={score:.2}），丢弃");
+                    return GlanceOutcome::Abort;
+                }
+            }
+        }
+        st.last_hsv = Some(shot.hsv_grid.clone());
+        match crate::awareness::capture::resolve_target() {
+            Ok(w) => {
+                st.last_proc = w.process;
+                st.last_title = w.title;
+            }
+            Err(_) => st.last_proc = shot.process.clone(),
+        }
+    }
+
+    let thumb_file = match crate::files::save_image(&shot.thumb_png, "png") {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[proactive] 缩略图保存失败：{e}");
+            return GlanceOutcome::Abort;
+        }
+    };
+    let record = format!("看了「{}」的窗口（{}×{}）", shot.process, shot.width, shot.height);
+
+    let png = match vision.filter(|_| !aux_sees) {
+        // 辅助模型自己能看图：原图直接附在写话请求里
+        None => {
+            intent.reason = format!("{}。{}", record, intent.reason);
+            Some(shot.png)
+        }
+        // 否则先让视觉模型转述成文字
+        Some(vision) => {
+            use base64::Engine;
+            let url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&shot.png));
+            let ep = crate::llm::Endpoint::from_provider(&vision);
+            match crate::chat::describe_image_url(&ep, url, &format!("桌面「{}」窗口", shot.process)).await {
+                Ok(text) => {
+                    intent.reason = format!("{}。画面转述：{text}", record);
+                    None
+                }
+                Err(e) => {
+                    eprintln!("[proactive] 视觉转述失败：{e}");
+                    let _ = std::fs::remove_file(crate::files::attachments_dir().join(&thumb_file));
+                    return GlanceOutcome::Abort;
+                }
+            }
+        }
+    };
+
+    {
+        let mut st = GLANCE_STATE.lock().unwrap();
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        if st.day != today {
+            st.day = today;
+            st.glances_today = 0;
+        }
+        st.glances_today += 1;
+        st.last_success = Some(Instant::now());
+        let store = &app.state::<AppState>().store;
+        let _ = store.set_state("proactive:screen-glance", &format!("{}:{}", st.day, st.glances_today));
+    }
+
+    GlanceOutcome::Ready { thumb_file, process: shot.process, record, png }
+}
+
+struct GlanceState {
+    day: String,
+    glances_today: u32,
+    last_success: Option<Instant>,
+    last_proc: String,
+    last_title: String,
+    last_hsv: Option<Vec<f32>>,
+    /// 上次尝试看屏的时间（不管成没成）
+    last_try: Option<Instant>,
+}
+
+static GLANCE_STATE: Mutex<GlanceState> = Mutex::new(GlanceState {
+    day: String::new(),
+    glances_today: 0,
+    last_success: None,
+    last_proc: String::new(),
+    last_title: String::new(),
+    last_hsv: None,
+    last_try: None,
+});
+
+fn title_material_for_prompt(a: &crate::config::AwarenessParams) -> Option<String> {
+    if !a.include_title {
+        return None;
+    }
+    let w = crate::awareness::capture::resolve_target().ok()?;
+    crate::awareness::gate(&w, a).ok()?;
+    let title: String = w.title.chars().take(140).collect();
+    Some(format!("前台程序 {}，窗口标题：{}", w.process, title))
+}
+
+/// 念头 → 一两句话。闲聊若模型只回 NO_SPEAK 则返回 None；重要触发器回 NO_SPEAK 时改用模板。
+pub async fn compose(
+    app: &AppHandle,
+    intent: &Intent,
+    use_model: bool,
+    title_note: Option<&str>,
+    image: Option<&[u8]>,
+) -> Option<String> {
     if use_model {
-        match compose_with_model(app, intent).await {
-            Ok(t) if !t.is_empty() => return t,
+        match compose_with_model(app, intent, title_note, image).await {
+            Ok(t) if is_no_speak(&t) => {
+                if intent.important {
+                    return Some(intent.fallback.clone());
+                }
+                return None;
+            }
+            Ok(t) if !t.is_empty() => return Some(t),
             Ok(_) => {}
             Err(e) => eprintln!("[proactive] 用模型写失败，改用模板：{e}"),
         }
     }
-    intent.fallback.clone()
+    Some(intent.fallback.clone())
 }
 
-async fn compose_with_model(app: &AppHandle, intent: &Intent) -> Result<String, String> {
-    use crate::llm::{self, ChatMessage, Endpoint};
+async fn compose_with_model(
+    app: &AppHandle,
+    intent: &Intent,
+    title_note: Option<&str>,
+    image: Option<&[u8]>,
+) -> Result<String, String> {
+    use crate::llm::{self, ChatMessage, Endpoint, ImageUrl, Part};
     use crate::memory;
     let state = app.state::<AppState>();
     let cfg = state.config.lock().unwrap().clone();
     let persona = cfg.active_persona();
     let provider = cfg.aux_provider(&persona).ok_or("没有可用的模型")?;
     let recall = memory::Recall::from_config(&cfg);
-    let memory = memory::prompt_block(&memory::recall(&state.store, recall.as_ref(), &intent.reason).await).unwrap_or_default();
+    let memory = memory::prompt_block(
+        &memory::recall(&state.store, recall.as_ref(), &intent.reason).await,
+    )
+    .unwrap_or_default();
     let recent: Vec<String> = state
         .store
         .history(&persona.id, None, 6)
         .map_err(|e| e.to_string())?
         .into_iter()
-        // 聊天命令（@状态 等）不算
         .filter(|m| !m.llm_text.is_empty())
         .map(|m| {
             let who = if m.role == "user" { "用户" } else { "你" };
             format!("{who}：{}", m.display.chars().take(80).collect::<String>())
         })
         .collect();
+    let nospeak_hint = if intent.important {
+        String::new()
+    } else {
+        "如果现在不适合打扰，只回 NO_SPEAK。".to_string()
+    };
     let system = format!(
         "{}\n\n{}\n\n现在由你主动开口跟用户说一句话（不是回复）。要求：一两句、不超过 40 个字，自然口语，符合你的人设；\
-不要提到「系统」「触发」「提醒功能」这类词，不要加引号、旁白或动作描写。",
+不要提到「系统」「触发」「提醒功能」这类词，不要加引号、旁白或动作描写。{nospeak_hint}",
         persona.system_prompt.trim(),
         memory
     );
-    // 关系和心情影响开口的语气
     let relation = if cfg.chat.relationship {
-        format!("\n{}。语气要符合这种关系和心情。", state.store.relation(&persona.id).note(crate::store::now_secs()))
+        format!(
+            "\n{}。语气要符合这种关系和心情。",
+            state.store.relation(&persona.id).note(crate::store::now_secs())
+        )
     } else {
         String::new()
     };
-    let user = format!(
-        "现在是 {}。开口的原因：{}{relation}\n\n最近的对话：\n{}",
+    let title_line = title_note.map(|s| format!("\n{s}")).unwrap_or_default();
+    let user_text = format!(
+        "现在是 {}。开口的原因：{}{title_line}{relation}\n\n最近的对话：\n{}",
         crate::chat::now_label(),
         intent.reason,
-        if recent.is_empty() { "（还没聊过）".to_string() } else { recent.join("\n") }
+        if recent.is_empty() {
+            "（还没聊过）".to_string()
+        } else {
+            recent.join("\n")
+        }
     );
-    let text = llm::chat_once(&Endpoint::from_provider(provider), &[ChatMessage::text("system", system), ChatMessage::text("user", user)], Some(0.8)).await?;
+    let messages = if let Some(png) = image.filter(|_| provider.supports_vision) {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let url = format!("data:image/png;base64,{b64}");
+        vec![
+            ChatMessage::text("system", system),
+            ChatMessage::parts(
+                "user",
+                vec![
+                    Part::Text { text: user_text },
+                    Part::ImageUrl {
+                        image_url: ImageUrl { url },
+                    },
+                ],
+            ),
+        ]
+    } else {
+        vec![
+            ChatMessage::text("system", system),
+            ChatMessage::text("user", user_text),
+        ]
+    };
+    let text =
+        llm::chat_once(&Endpoint::from_provider(provider), &messages, Some(0.8)).await?;
     Ok(clean_line(&text))
 }
 
@@ -896,6 +1352,30 @@ pub fn clean_line(s: &str) -> String {
     let s = s.trim_matches(|c| matches!(c, '"' | '“' | '”' | '「' | '」' | '\'' | ' '));
     s.chars().take(120).collect()
 }
+
+/// clean_line 之后整句等于 NO_SPEAK（忽略大小写和空白/常见标点；夹杂其它文字则否）
+pub fn is_no_speak(s: &str) -> bool {
+    let cleaned = clean_line(s);
+    let mut buf = String::new();
+    for c in cleaned.chars() {
+        if c.is_ascii_alphanumeric() {
+            buf.push(c.to_ascii_lowercase());
+        } else if c.is_whitespace()
+            || matches!(
+                c,
+                '_' | '-' | '.' | '!' | '?' | ',' | ';' | ':' | '"' | '\'' | '“' | '”' | '「' | '」'
+                    | '。' | '！' | '？' | '，' | '；' | '：'
+            )
+        {
+            continue;
+        } else {
+            return false;
+        }
+    }
+    buf == "nospeak"
+}
+
+
 
 /// 多久没有键盘、鼠标操作了（秒）
 #[cfg(windows)]
@@ -939,6 +1419,8 @@ mod tests {
             mode: DesktopMode::Normal,
             silent: None,
             away_secs: idle,
+            fg_process: None,
+            fg_title: None,
         }
     }
 
@@ -1096,9 +1578,9 @@ mod tests {
         p.holidays = false;
         p.encourage_minutes = None;
         p.welcome_back_minutes = None;
-        assert!(build_triggers(&p).is_empty());
+        assert!(build_triggers(&p, &crate::config::AwarenessParams::default()).is_empty());
         p.birthday = Some("13-40".into()); // 写错的生日不算
-        assert!(build_triggers(&p).is_empty());
+        assert!(build_triggers(&p, &crate::config::AwarenessParams::default()).is_empty());
         p.holidays = true;
         p.encourage_minutes = Some(90);
         p.welcome_back_minutes = Some(60);
@@ -1110,7 +1592,7 @@ mod tests {
             crate::config::DailyReminder { at: "18:00".into(), label: "下班".into() },
             crate::config::DailyReminder { at: "25:99".into(), label: "写错的".into() },
         ];
-        let ids: Vec<_> = build_triggers(&p).iter().map(|t| t.id()).collect();
+        let ids: Vec<_> = build_triggers(&p, &crate::config::AwarenessParams::default()).iter().map(|t| t.id()).collect();
         assert_eq!(
             ids,
             vec!["daily-at", "special-day", "bedtime", "agent-follow-up", "sedentary", "welcome-back", "encourage", "long-no-chat"]
@@ -1368,5 +1850,100 @@ mod tests {
         assert_eq!(clean_line("“早点睡呀，\n明天还要早起呢～”"), "早点睡呀， 明天还要早起呢～");
         assert_eq!(clean_line("「休息一下吧」"), "休息一下吧");
         assert_eq!(clean_line(&"啊".repeat(200)).chars().count(), 120);
+    }
+
+    #[test]
+    fn no_speak_detection_ignores_case_and_punct() {
+        assert!(is_no_speak("NO_SPEAK"));
+        assert!(is_no_speak("no-speak"));
+        assert!(is_no_speak("「No_Speak」"));
+        assert!(is_no_speak(" NO SPEAK "));
+        assert!(!is_no_speak("不要说话"));
+        assert!(!is_no_speak("NO_SPEAK 吧"));
+    }
+
+    #[test]
+    fn glance_caps_interval_and_daily() {
+        assert!(glance_caps_allow(0, 30, None, 600));
+        assert!(!glance_caps_allow(0, 30, Some(599), 600));
+        assert!(glance_caps_allow(0, 30, Some(600), 600));
+        assert!(!glance_caps_allow(30, 30, Some(9999), 600));
+        assert!(glance_caps_allow(29, 30, Some(9999), 600));
+    }
+
+    #[test]
+    fn glance_rules_match_process_and_title() {
+        use crate::config::VisionProcessRule;
+        let rules = vec![
+            VisionProcessRule { process: "Code".into(), title_keyword: None },
+            VisionProcessRule { process: "chrome".into(), title_keyword: Some("YouTube".into()) },
+        ];
+        assert!(glance_rule_hit(&rules, "code.exe", "任意"));
+        assert!(!glance_rule_hit(&rules, "chrome", "首页"));
+        assert!(glance_rule_hit(&rules, "Chrome.exe", "看 YouTube 视频"));
+        assert!(!glance_rule_hit(&rules, "firefox", "YouTube"));
+    }
+
+    #[test]
+    fn screen_glance_is_chit_chat_and_respects_caps() {
+        use crate::config::{AwarenessParams, VisionProcessRule};
+        let mut a = AwarenessParams::default();
+        a.proactive_vision = true;
+        a.vision_authorized = true;
+        a.vision_min_interval_minutes = 10;
+        a.vision_daily_cap = 30;
+        a.vision_process_rules = vec![VisionProcessRule { process: "code".into(), title_keyword: None }];
+        a.vision_on_significant_change = false;
+        let mut g = ScreenGlance::new(&a);
+        assert!(!g.important());
+        {
+            let mut st = GLANCE_STATE.lock().unwrap();
+            st.day = "2026-10-25".into();
+            st.glances_today = 0;
+            st.last_success = None;
+        }
+        let mut c = ctx(10, 0, 5, Some(100));
+        c.fg_process = Some("code".into());
+        c.fg_title = Some("main.rs".into());
+        let i = g.poll(&c).expect("rule hit");
+        assert_eq!(i.trigger, "screen-glance");
+        assert!(!i.important);
+        assert_eq!(i.glance_kind, Some(GlanceKind::Rule));
+
+        {
+            let mut st = GLANCE_STATE.lock().unwrap();
+            st.last_success = Some(std::time::Instant::now());
+            st.glances_today = 1;
+        }
+        assert!(g.poll(&c).is_none(), "min interval");
+
+        {
+            let mut st = GLANCE_STATE.lock().unwrap();
+            st.last_success = Some(std::time::Instant::now() - std::time::Duration::from_secs(601));
+            st.glances_today = 30;
+        }
+        assert!(g.poll(&c).is_none(), "daily cap");
+
+        // 上次没看成（门禁、截图失败、变化不显著）：5 分钟内不再试
+        {
+            let mut st = GLANCE_STATE.lock().unwrap();
+            st.glances_today = 0;
+            st.last_success = None;
+            st.last_try = Some(std::time::Instant::now());
+        }
+        assert!(g.poll(&c).is_none(), "retry backoff");
+        GLANCE_STATE.lock().unwrap().last_try = Some(std::time::Instant::now() - std::time::Duration::from_secs(GLANCE_RETRY_SECS));
+        assert!(g.poll(&c).is_some());
+        GLANCE_STATE.lock().unwrap().last_try = None;
+    }
+
+    #[test]
+    fn build_triggers_adds_screen_glance_when_enabled() {
+        let p = ProactiveParams { enabled: true, ..ProactiveParams::default() };
+        let mut a = crate::config::AwarenessParams::default();
+        assert!(!build_triggers(&p, &a).iter().any(|t| t.id() == "screen-glance"));
+        a.proactive_vision = true;
+        a.vision_authorized = true;
+        assert!(build_triggers(&p, &a).iter().any(|t| t.id() == "screen-glance"));
     }
 }

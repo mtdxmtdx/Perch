@@ -554,12 +554,17 @@ fn tool_note(allowed: &[PathBuf], with_image: bool, with_see: bool) -> String {
     s
 }
 
-/// 桌宠主动说的话记进对话：用户回复时，模型知道自己刚说了什么
-pub(crate) fn add_assistant_message(app: &AppHandle, persona: &str, text: &str) -> Result<(), String> {
+/// 桌宠主动说的话记进对话（可带附件，比如看屏缩略图）：用户回复时，模型知道自己刚说了什么
+pub(crate) fn add_assistant_message_with_atts(
+    app: &AppHandle,
+    persona: &str,
+    text: &str,
+    atts: &[AttachmentMeta],
+) -> Result<(), String> {
     let msg = app
         .state::<AppState>()
         .store
-        .insert_message(persona, "assistant", text, text, &[])
+        .insert_message(persona, "assistant", text, text, atts)
         .map_err(|e| e.to_string())?;
     emit(app, ChatEvent::Added { persona: persona.to_string(), message: msg });
     Ok(())

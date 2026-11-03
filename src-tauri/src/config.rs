@@ -129,6 +129,33 @@ pub struct AwarenessParams {
     pub capture_whitelist: Vec<String>,
     /// 用户拦截：进程名或标题关键字（预置聊天应用与无痕关键字，可删可加）
     pub capture_blocklist_user: Vec<String>,
+    /// 主动聊天写话时附带前台程序名+标题（最多 140 字）；被门禁拦住的不给
+    pub include_title: bool,
+    /// 主动看屏（screen-glance 闲聊触发器）
+    pub proactive_vision: bool,
+    /// 两次主动看屏最短间隔（分钟）
+    pub vision_min_interval_minutes: u64,
+    /// 每天最多主动看屏次数
+    pub vision_daily_cap: u32,
+    /// 进程/标题规则：命中则看一眼
+    pub vision_process_rules: Vec<VisionProcessRule>,
+    /// 前台窗口或标题相对上次看屏变化时，用 cuts 比对是否显著
+    pub vision_on_significant_change: bool,
+}
+
+/// 主动看屏：进程名（不带 .exe）与可选的本地标题关键字
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct VisionProcessRule {
+    pub process: String,
+    #[serde(default)]
+    pub title_keyword: Option<String>,
+}
+
+impl Default for VisionProcessRule {
+    fn default() -> Self {
+        Self { process: String::new(), title_keyword: None }
+    }
 }
 
 impl Default for AwarenessParams {
@@ -142,6 +169,12 @@ impl Default for AwarenessParams {
             capture_whitelist_mode: false,
             capture_whitelist: Vec::new(),
             capture_blocklist_user: block,
+            include_title: false,
+            proactive_vision: false,
+            vision_min_interval_minutes: 10,
+            vision_daily_cap: 30,
+            vision_process_rules: Vec::new(),
+            vision_on_significant_change: true,
         }
     }
 }
