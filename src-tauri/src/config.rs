@@ -459,6 +459,7 @@ impl Default for Config {
             voice: VoiceParams::default(),
             tts: TtsParams::default(),
             proactive: ProactiveParams::default(),
+            awareness: AwarenessParams::default(),
             agents: AgentsParams::default(),
         }
     }
