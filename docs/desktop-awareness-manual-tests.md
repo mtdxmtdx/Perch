@@ -59,14 +59,12 @@
 | M4-2 | README 致谢 | 链到 dsh-see-now / storyboard / windows-capture；声明无 GPL 桌面感知代码 |
 | M4-3 | 设置文案 | 含整屏菜单提示、标题默认不上传、全屏通知/勿扰说明 |
 
-## 性能抽样（开发机）
+## 性能抽样
 
-在 Linux 纯逻辑测试箱或 `cargo test` 中跑 `perf_sample_*`（`awareness/cuts.rs`、`awareness/capture.rs`）：
+两个抽样测试默认跳过，用 release 构建跑：`cargo test --release -- --ignored perf_sample`（在 `src-tauri` 下）。
 
-| 项目 | 本环境抽样（2026-11-02，Linux box） | 测试断言上限 |
-| --- | --- | --- |
-| `score_pair`（64×36 HSV） | ≈28 µs/次（200 次累计 ≈5.7 ms） | < 50 ms/次 |
-| `downscale_area_average` 1920×1080→1280×720 | ≈153 ms | < 500 ms |
-
-Windows 真机可再记一笔：单次 WGC 窗口捕获端到端耗时（含编码），仅作参考、不设门槛。
-
+| 项目 | 抽样（2026-11-03，Windows 11 x64，release） |
+| --- | --- |
+| `score_pair`（64×36 HSV） | ≈2.7 µs/次 |
+| `downscale_area_average` 1920×1080→1280×720 | ≈8 ms |
+| WGC 截一次前台窗口（`wgc_grabs_foreground_window`，debug） | 测试总耗时 0.27 s |

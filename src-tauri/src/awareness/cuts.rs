@@ -178,8 +178,9 @@ mod tests {
         assert!(is_significant(12.0));
     }
 
-    /// 性能抽样：64×36 score_pair 应远快于交互预算（保守上限 50ms/次，防回退）
+    /// 性能抽样（耗时随机器浮动，默认跳过）：cargo test --release -- --ignored perf_sample
     #[test]
+    #[ignore]
     fn perf_sample_score_pair() {
         let w = 128u32;
         let h = 72u32;

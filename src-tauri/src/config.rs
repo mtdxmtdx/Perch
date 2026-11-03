@@ -649,9 +649,10 @@ mod awareness_serde_tests {
     }
 
     #[test]
-    fn proactive_media_defaults_include_bedtime() {
+    fn proactive_media_defaults_match_decision() {
         let p = ProactiveParams::default();
-        assert!(p.media_allowed_triggers.iter().any(|s| s == "bedtime"));
+        // 已定决策：看视频 = 久坐 + 定时提醒；就寝可在设置里勾
+        assert_eq!(p.media_allowed_triggers, vec!["sedentary".to_string(), "daily-at".to_string()]);
         assert!(p.fullscreen_allowed_triggers.iter().any(|s| s == "daily-at"));
         assert!(!p.fullscreen_allowed_triggers.iter().any(|s| s == "long-no-chat"));
     }

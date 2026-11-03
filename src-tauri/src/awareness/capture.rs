@@ -570,8 +570,9 @@ mod tests {
         assert_eq!(Scope::parse(Some("WINDOW")), Scope::Window);
     }
 
-    /// 性能抽样：约 1080p RGBA 缩到长边 1280，应在交互可接受范围内
+    /// 性能抽样（耗时随机器浮动，默认跳过）：cargo test --release -- --ignored perf_sample
     #[test]
+    #[ignore]
     fn perf_sample_downscale() {
         let w = 1920u32;
         let h = 1080u32;
