@@ -6,11 +6,11 @@
 //! 3. 这句话记进当前人格的对话（用户回复时模型知道自己刚说了什么），再交给 `speak::say` 说出来。
 //!
 //! 打扰规则（[`allowed`]）：
-//! - 桌宠隐藏（全屏、手动隐藏）时什么都不说；对话进行中、正在录音、气泡开着时先等等；
-//! - 按前台程序判断的桌面状态（[`DesktopMode`]）：静默（全屏、开会、直播）时什么都不说；
-//!   专注（写代码、agent 在干活）时闲聊不说，只说重要的和鼓励；
-//! - 工作模式、免打扰时段、距上次主动开口不到 `min_interval_minutes` 时，只说"重要的"
-//!   （用户自己设的定时提醒、就寝、久坐、agent 一直等你、节日和生日），闲聊不说。
+//! - 对话进行中、正在录音、气泡开着（`busy`）或用户手动隐藏时什么都不说；
+//! - 静默时按原因放行：开会/通话一律不说；全屏 / 在看只放行对应白名单里的重要提醒
+//!   （全屏时桌宠已隐藏，走系统通知）；白名单里的闲聊 id 也不放行；
+//! - 关掉桌面状态后，全屏自动隐藏仍什么都不说（`pet_hidden`）；
+//! - 专注时闲聊不说，只说重要的和鼓励；工作模式、免打扰时段、冷却期内只说重要的。
 
 use crate::config::ProactiveParams;
 use crate::AppState;
@@ -27,38 +27,67 @@ pub struct Context {
     pub user_idle_secs: u64,
     /// 距上次和桌宠说话多久了（秒）；从没聊过时为 None
     pub since_last_chat_secs: Option<u64>,
-    /// 现在能不能开口：桌宠显示着、没在回复、没在录音、气泡没开着
-    pub can_disturb: bool,
+    /// 气泡开着、对话中、录音中（原 can_disturb 去掉「桌宠隐藏」）
+    pub busy: bool,
+    /// 用户手动隐藏桌宠
+    pub user_hidden: bool,
+    /// 手动隐藏或全屏自动隐藏
+    pub pet_hidden: bool,
     /// 安静：工作模式或免打扰时段，只说重要的
     pub quiet: bool,
     /// 还在等你授权的 agent
     pub agents_waiting: Vec<&'static str>,
-    /// 桌面上在干什么
+    /// 桌面上在干什么（对外仍是三态）
     pub mode: DesktopMode,
+    /// 为什么静默（仅 mode == Silent 时有）
+    pub silent: Option<SilentReason>,
+    /// 多久不在电脑前：在看时为 0，否则等于 user_idle_secs
+    pub away_secs: u64,
 }
 
-/// 桌面上在干什么（按前台程序判断）
+/// 桌面上在干什么（按前台程序与廉价信号判断）
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DesktopMode {
     Normal,
     /// 专注：前台是编辑器、终端，或者 agent 在干活。闲聊不说，只说重要的和鼓励
     Focus,
-    /// 静默：全屏（游戏、视频、放映）、开会、直播录屏。什么都不说
+    /// 静默：开会/通话、全屏、在看视频。按 [`SilentReason`] 决定白名单
     Silent,
 }
 
-/// 判断桌面状态。fg：前台程序名（不带 .exe）；agents_busy：有 agent 在思考或干活
-pub fn desktop_mode(p: &ProactiveParams, fullscreen: bool, fg: Option<&str>, agents_busy: bool) -> DesktopMode {
+/// 为什么静默（mode == Silent 时才有）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SilentReason {
+    Meeting,
+    Fullscreen,
+    Watching,
+}
+
+/// 判断桌面状态。优先级：开会 > 全屏 > 在看 > 专注 > 普通。
+/// fg：前台程序名（不带 .exe）；agents_busy：有 agent 在思考或干活；
+/// in_call / watching：廉价信号（调用方在 desktop_modes 关闭时传 false）。
+pub fn desktop_mode(
+    p: &ProactiveParams,
+    fullscreen: bool,
+    fg: Option<&str>,
+    agents_busy: bool,
+    in_call: bool,
+    watching: bool,
+) -> (DesktopMode, Option<SilentReason>) {
     if !p.desktop_modes {
-        return DesktopMode::Normal;
+        return (DesktopMode::Normal, None);
     }
     let listed = |list: &[String]| fg.is_some_and(|f| list.iter().any(|a| a.trim().trim_end_matches(".exe").eq_ignore_ascii_case(f)));
-    if fullscreen || listed(&p.silent_apps) {
-        DesktopMode::Silent
+    if in_call || listed(&p.silent_apps) {
+        (DesktopMode::Silent, Some(SilentReason::Meeting))
+    } else if fullscreen {
+        (DesktopMode::Silent, Some(SilentReason::Fullscreen))
+    } else if watching {
+        (DesktopMode::Silent, Some(SilentReason::Watching))
     } else if agents_busy || listed(&p.focus_apps) {
-        DesktopMode::Focus
+        (DesktopMode::Focus, None)
     } else {
-        DesktopMode::Normal
+        (DesktopMode::Normal, None)
     }
 }
 
@@ -114,14 +143,27 @@ pub trait ProactiveTrigger: Send {
 }
 
 /// 这个触发器现在能不能开口
-pub fn allowed(important: bool, focus_ok: bool, ctx: &Context, cooling: bool) -> bool {
-    if !ctx.can_disturb || ctx.mode == DesktopMode::Silent {
+pub fn allowed(t: &dyn ProactiveTrigger, ctx: &Context, p: &ProactiveParams, cooling: bool) -> bool {
+    if ctx.busy || ctx.user_hidden {
         return false;
     }
-    if important {
+    if let Some(why) = ctx.silent {
+        let list = match why {
+            SilentReason::Meeting => return false,
+            SilentReason::Fullscreen => &p.fullscreen_allowed_triggers,
+            SilentReason::Watching => &p.media_allowed_triggers,
+        };
+        // 白名单里写了闲聊 id 也不放行
+        return t.important() && list.iter().any(|id| id == t.id());
+    }
+    if ctx.pet_hidden {
+        // 关掉桌面状态时，全屏隐藏仍什么都不说（保持现状）
+        return false;
+    }
+    if t.important() {
         return true;
     }
-    !ctx.quiet && !cooling && (ctx.mode == DesktopMode::Normal || focus_ok)
+    !ctx.quiet && !cooling && (ctx.mode == DesktopMode::Normal || t.focus_ok())
 }
 
 fn minutes(secs: u64) -> u64 {
@@ -154,7 +196,7 @@ impl ProactiveTrigger for LongNoChat {
             self.armed = true;
             return None;
         }
-        if self.armed && ctx.user_idle_secs <= self.active_within_secs {
+        if self.armed && ctx.away_secs <= self.active_within_secs {
             self.armed = false;
             return Some(Intent {
                 trigger: self.id(),
@@ -225,11 +267,12 @@ impl ProactiveTrigger for Sedentary {
         true
     }
     fn poll(&mut self, ctx: &Context) -> Option<Intent> {
-        if ctx.user_idle_secs >= self.break_secs {
+        // 用 away_secs：看视频时不算离开，久坐继续计时
+        if ctx.away_secs >= self.break_secs {
             self.active_since = None;
             return None;
         }
-        let start = *self.active_since.get_or_insert(ctx.now - ChronoDuration::seconds(ctx.user_idle_secs as i64));
+        let start = *self.active_since.get_or_insert(ctx.now - ChronoDuration::seconds(ctx.away_secs as i64));
         let used = (ctx.now - start).num_seconds().max(0) as u64;
         if used < self.after_secs {
             return None;
@@ -279,7 +322,7 @@ impl ProactiveTrigger for Bedtime {
     }
     fn poll(&mut self, ctx: &Context) -> Option<Intent> {
         let (since, len) = self.window(ctx.now.time());
-        if since >= len || ctx.user_idle_secs > 120 {
+        if since >= len || ctx.away_secs > 120 {
             return None;
         }
         // 这一晚从哪天开始（过了午夜也算前一天晚上）
@@ -426,14 +469,14 @@ impl ProactiveTrigger for WelcomeBack {
         "welcome-back"
     }
     fn observe(&mut self, ctx: &Context) {
-        // 两次轮询隔了很久：电脑睡眠或休眠过
+        // 两次轮询隔了很久：电脑睡眠或休眠过；away_secs 在看时为 0，看完碰鼠标不会欢迎回来
         let gap = self.last_tick.map_or(0, |t| (ctx.now - t).num_seconds().max(0) as u64);
         self.last_tick = Some(ctx.now);
-        let away_now = ctx.user_idle_secs.max(gap);
+        let away_now = ctx.away_secs.max(gap);
         if away_now >= self.away_secs {
             self.away = Some(self.away.unwrap_or(0).max(away_now));
         }
-        if ctx.user_idle_secs < 60 {
+        if ctx.away_secs < 60 {
             if let Some(secs) = self.away.take() {
                 self.back = Some((secs, ctx.now));
             }
@@ -443,7 +486,7 @@ impl ProactiveTrigger for WelcomeBack {
         // 回来超过 10 分钟还没轮到说，就不说了
         let back = self.back.take().filter(|(_, at)| ctx.now - *at <= ChronoDuration::minutes(10));
         let today = ctx.now.date_naive();
-        if (5..11).contains(&ctx.now.hour()) && self.greeted != Some(today) && ctx.user_idle_secs < 60 {
+        if (5..11).contains(&ctx.now.hour()) && self.greeted != Some(today) && ctx.away_secs < 60 {
             self.greeted = Some(today);
             return Some(Intent {
                 trigger: self.id(),
@@ -679,7 +722,12 @@ fn tick(app: &AppHandle) -> Option<Intent> {
     }
     let ctx = context(app, &p);
     if rt.last_mode != Some(ctx.mode) {
-        eprintln!("[proactive] 桌面状态：{:?}（前台 {}）", ctx.mode, crate::pet::win::foreground_process().unwrap_or_default());
+        eprintln!(
+            "[proactive] 桌面状态：{:?}{:?}（前台 {}）",
+            ctx.mode,
+            ctx.silent,
+            crate::pet::win::foreground_process().unwrap_or_default()
+        );
         rt.last_mode = Some(ctx.mode);
     }
     for t in rt.triggers.iter_mut() {
@@ -689,7 +737,7 @@ fn tick(app: &AppHandle) -> Option<Intent> {
     let intent = rt
         .triggers
         .iter_mut()
-        .filter(|t| allowed(t.important(), t.focus_ok(), &ctx, cooling))
+        .filter(|t| allowed(t.as_ref(), &ctx, &p, cooling))
         .find_map(|t| {
             let i = t.poll(&ctx)?;
             if let Some(saved) = t.saved() {
@@ -706,11 +754,11 @@ fn tick(app: &AppHandle) -> Option<Intent> {
 /// 收集当前情况
 pub fn context(app: &AppHandle, p: &ProactiveParams) -> Context {
     let state = app.state::<AppState>();
-    let (hidden, work_mode, bubble, fullscreen) = {
+    let (pet_hidden, user_hidden, work_mode, bubble, fullscreen) = {
         let s = state.shared.lock().unwrap();
-        (s.pet_hidden, s.work_mode, s.bubble_visible, s.fullscreen)
+        (s.pet_hidden, s.user_hidden, s.work_mode, s.bubble_visible, s.fullscreen)
     };
-    let can_disturb = !hidden && !bubble && !crate::chat::is_busy(app) && !crate::voice::is_recording(app);
+    let busy = bubble || crate::chat::is_busy(app) || crate::voice::is_recording(app);
     let now = Local::now();
     let since_last_chat_secs = state.store.last_user_message_at().map(|t| (now.timestamp() - t).max(0) as u64);
     use crate::agents::model::Status;
@@ -718,19 +766,33 @@ pub fn context(app: &AppHandle, p: &ProactiveParams) -> Context {
     let agents_waiting = sessions.iter().filter(|s| s.status == Status::Attention).map(|s| s.agent_name).collect();
     let agents_busy = sessions.iter().any(|s| matches!(s.status, Status::Thinking | Status::Working));
     let fg = crate::pet::win::foreground_process();
+    let idle = user_idle_secs();
+    let (watching, in_call) = if p.desktop_modes {
+        let s = crate::awareness::signals(fg.as_deref(), idle, p.watching_idle_secs, p.watching_hold_secs);
+        (s.watching, s.in_call)
+    } else {
+        (false, false)
+    };
+    let (mode, silent) = desktop_mode(p, fullscreen, fg.as_deref(), agents_busy, in_call, watching);
+    // 在看（含全屏看视频）都算在电脑前：看完一部电影碰鼠标不算「离开归来」
+    let away_secs = if watching { 0 } else { idle };
     Context {
         now,
-        user_idle_secs: user_idle_secs(),
+        user_idle_secs: idle,
         since_last_chat_secs,
-        can_disturb,
+        busy,
+        user_hidden,
+        pet_hidden,
         quiet: work_mode || in_quiet_hours(p, now.time()),
         agents_waiting,
-        mode: desktop_mode(p, fullscreen, fg.as_deref(), agents_busy),
+        mode,
+        silent,
+        away_secs,
     }
 }
 
-/// 现在出声合不合适（给朗读用）：(静默状态：全屏、开会、直播, 安静：工作模式或免打扰时段)。
-/// 不管主动聊天开没开都按同样的规则判断
+/// 现在出声合不合适（给朗读用）：(静默状态：全屏、开会、在看, 安静：工作模式或免打扰时段)。
+/// 不管主动聊天开没开都按同样的规则判断；窗口化看视频时朗读也会停。
 pub fn sound_state(app: &AppHandle) -> (bool, bool) {
     let state = app.state::<AppState>();
     let p = state.config.lock().unwrap().proactive.clone();
@@ -741,8 +803,15 @@ pub fn sound_state(app: &AppHandle) -> (bool, bool) {
     use crate::agents::model::Status;
     let agents_busy = crate::agents::sessions(app).iter().any(|s| matches!(s.status, Status::Thinking | Status::Working));
     let fg = crate::pet::win::foreground_process();
-    let silent = desktop_mode(&p, fullscreen, fg.as_deref(), agents_busy) == DesktopMode::Silent;
-    (silent, work_mode || in_quiet_hours(&p, Local::now().time()))
+    let idle = user_idle_secs();
+    let (watching, in_call) = if p.desktop_modes {
+        let s = crate::awareness::signals(fg.as_deref(), idle, p.watching_idle_secs, p.watching_hold_secs);
+        (s.watching, s.in_call)
+    } else {
+        (false, false)
+    };
+    let (mode, _) = desktop_mode(&p, fullscreen, fg.as_deref(), agents_busy, in_call, watching);
+    (mode == DesktopMode::Silent, work_mode || in_quiet_hours(&p, Local::now().time()))
 }
 
 /// agent 汇报时调用：转给各触发器（关着时什么都不做）
@@ -862,11 +931,39 @@ mod tests {
             now,
             user_idle_secs: idle,
             since_last_chat_secs: since_chat,
-            can_disturb: true,
+            busy: false,
+            user_hidden: false,
+            pet_hidden: false,
             quiet: false,
             agents_waiting: vec![],
             mode: DesktopMode::Normal,
+            silent: None,
+            away_secs: idle,
         }
+    }
+
+    /// 测试用触发器桩
+    struct StubTrigger {
+        id: &'static str,
+        important: bool,
+        focus_ok: bool,
+    }
+    impl ProactiveTrigger for StubTrigger {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+        fn important(&self) -> bool {
+            self.important
+        }
+        fn focus_ok(&self) -> bool {
+            self.focus_ok
+        }
+        fn poll(&mut self, _ctx: &Context) -> Option<Intent> {
+            None
+        }
+    }
+    fn stub(id: &'static str, important: bool, focus_ok: bool) -> StubTrigger {
+        StubTrigger { id, important, focus_ok }
     }
 
     fn ctx(h: u32, m: u32, idle: u64, since_chat: Option<u64>) -> Context {
@@ -963,22 +1060,30 @@ mod tests {
         p.quiet_start = None;
         assert!(!in_quiet_hours(&p, t(13, 30)));
 
+        let chat = stub("long-no-chat", false, false);
+        let important = stub("daily-at", true, false);
+        let encourage = stub("encourage", false, true);
         let mut c = ctx(12, 0, 0, None);
-        assert!(allowed(false, false, &c, false));
-        assert!(!allowed(false, false, &c, true)); // 冷却中：闲聊不说
-        assert!(allowed(true, false, &c, true)); // 重要的照说
+        assert!(allowed(&chat, &c, &p, false));
+        assert!(!allowed(&chat, &c, &p, true)); // 冷却中：闲聊不说
+        assert!(allowed(&important, &c, &p, true)); // 重要的照说
         c.mode = DesktopMode::Focus;
-        assert!(!allowed(false, false, &c, false)); // 专注时闲聊不说
-        assert!(allowed(false, true, &c, false) && allowed(true, false, &c, false)); // 鼓励和重要的可以
-        assert!(!allowed(false, true, &c, true)); // 鼓励也受冷却限制
+        assert!(!allowed(&chat, &c, &p, false)); // 专注时闲聊不说
+        assert!(allowed(&encourage, &c, &p, false) && allowed(&important, &c, &p, false)); // 鼓励和重要的可以
+        assert!(!allowed(&encourage, &c, &p, true)); // 鼓励也受冷却限制
         c.mode = DesktopMode::Silent;
-        assert!(!allowed(true, true, &c, false)); // 静默时谁都不说
+        c.silent = Some(SilentReason::Meeting);
+        assert!(!allowed(&important, &c, &p, false)); // 开会一律不说
         c.mode = DesktopMode::Normal;
+        c.silent = None;
         c.quiet = true;
-        assert!(!allowed(false, false, &c, false) && allowed(true, false, &c, false));
-        assert!(!allowed(false, true, &c, false)); // 工作模式、免打扰时段不鼓励
-        c.can_disturb = false;
-        assert!(!allowed(true, false, &c, false)); // 不能打扰时谁都不说
+        assert!(!allowed(&chat, &c, &p, false) && allowed(&important, &c, &p, false));
+        assert!(!allowed(&encourage, &c, &p, false)); // 工作模式、免打扰时段不鼓励
+        c.busy = true;
+        assert!(!allowed(&important, &c, &p, false)); // 忙着时谁都不说
+        c.busy = false;
+        c.user_hidden = true;
+        assert!(!allowed(&important, &c, &p, false)); // 手动隐藏谁都不说
     }
 
     #[test]
@@ -1015,17 +1120,50 @@ mod tests {
     #[test]
     fn desktop_mode_follows_foreground_app() {
         let mut p = ProactiveParams::default();
-        assert_eq!(desktop_mode(&p, false, Some("code"), false), DesktopMode::Focus);
-        assert_eq!(desktop_mode(&p, false, Some("windowsterminal"), false), DesktopMode::Focus);
-        assert_eq!(desktop_mode(&p, false, Some("wemeetapp"), false), DesktopMode::Silent);
-        assert_eq!(desktop_mode(&p, true, Some("code"), true), DesktopMode::Silent); // 全屏优先
-        assert_eq!(desktop_mode(&p, false, Some("chrome"), true), DesktopMode::Focus); // agent 在干活
-        assert_eq!(desktop_mode(&p, false, Some("chrome"), false), DesktopMode::Normal);
-        assert_eq!(desktop_mode(&p, false, None, false), DesktopMode::Normal);
+        let mode = |p: &ProactiveParams, fs, fg, busy, call, watch| desktop_mode(p, fs, fg, busy, call, watch);
+        assert_eq!(mode(&p, false, Some("code"), false, false, false), (DesktopMode::Focus, None));
+        assert_eq!(mode(&p, false, Some("windowsterminal"), false, false, false), (DesktopMode::Focus, None));
+        assert_eq!(
+            mode(&p, false, Some("wemeetapp"), false, false, false),
+            (DesktopMode::Silent, Some(SilentReason::Meeting))
+        );
+        assert_eq!(
+            mode(&p, true, Some("code"), true, false, false),
+            (DesktopMode::Silent, Some(SilentReason::Fullscreen))
+        ); // 全屏优先于专注
+        assert_eq!(mode(&p, false, Some("chrome"), true, false, false), (DesktopMode::Focus, None)); // agent 在干活
+        assert_eq!(mode(&p, false, Some("chrome"), false, false, false), (DesktopMode::Normal, None));
+        assert_eq!(mode(&p, false, None, false, false, false), (DesktopMode::Normal, None));
         p.focus_apps = vec!["Obsidian.exe".into()]; // 带 .exe、大小写都行
-        assert_eq!(desktop_mode(&p, false, Some("obsidian"), false), DesktopMode::Focus);
+        assert_eq!(mode(&p, false, Some("obsidian"), false, false, false), (DesktopMode::Focus, None));
         p.desktop_modes = false;
-        assert_eq!(desktop_mode(&p, true, Some("zoom"), false), DesktopMode::Normal);
+        assert_eq!(mode(&p, true, Some("zoom"), false, true, true), (DesktopMode::Normal, None));
+    }
+
+    #[test]
+    fn desktop_mode_priority_meeting_over_fullscreen_watching_focus() {
+        let p = ProactiveParams::default();
+        // 开会 > 全屏 > 在看 > 专注 > 普通
+        assert_eq!(
+            desktop_mode(&p, true, Some("code"), true, true, true),
+            (DesktopMode::Silent, Some(SilentReason::Meeting))
+        );
+        assert_eq!(
+            desktop_mode(&p, true, Some("code"), true, false, true),
+            (DesktopMode::Silent, Some(SilentReason::Fullscreen))
+        );
+        assert_eq!(
+            desktop_mode(&p, false, Some("chrome"), true, false, true),
+            (DesktopMode::Silent, Some(SilentReason::Watching))
+        );
+        assert_eq!(
+            desktop_mode(&p, false, Some("code"), false, false, false),
+            (DesktopMode::Focus, None)
+        );
+        assert_eq!(
+            desktop_mode(&p, false, Some("chrome"), false, false, false),
+            (DesktopMode::Normal, None)
+        );
     }
 
     #[test]
@@ -1118,6 +1256,111 @@ mod tests {
         assert_eq!(t.saved().as_deref(), Some("2026-10-25"));
         let mut t = SpecialDay::new(true, None, vec![]);
         assert!(t.poll(&ctx(9, 0, 0, None)).is_none()); // 普通日子
+    }
+
+    #[test]
+    fn fullscreen_whitelist_allows_daily_at_only_by_default() {
+        let p = ProactiveParams::default();
+        let mut c = ctx(12, 0, 0, None);
+        c.mode = DesktopMode::Silent;
+        c.silent = Some(SilentReason::Fullscreen);
+        c.pet_hidden = true; // 全屏时桌宠通常已隐藏，白名单应绕过
+        assert!(allowed(&stub("daily-at", true, false), &c, &p, false));
+        assert!(!allowed(&stub("sedentary", true, false), &c, &p, false));
+        assert!(!allowed(&stub("long-no-chat", false, false), &c, &p, false));
+    }
+
+    #[test]
+    fn watching_whitelist_allows_sedentary_and_daily_by_default() {
+        let p = ProactiveParams::default();
+        let mut c = ctx(12, 0, 0, None);
+        c.mode = DesktopMode::Silent;
+        c.silent = Some(SilentReason::Watching);
+        c.away_secs = 0;
+        for id in ["sedentary", "daily-at"] {
+            assert!(allowed(&stub(id, true, false), &c, &p, false), "{id}");
+        }
+        assert!(!allowed(&stub("bedtime", true, false), &c, &p, false)); // 就寝默认不勾，可在设置里勾
+        for id in ["encourage", "welcome-back", "long-no-chat"] {
+            assert!(!allowed(&stub(id, false, id == "encourage"), &c, &p, false), "{id}");
+        }
+    }
+
+    #[test]
+    fn watching_bedtime_allowed_when_checked() {
+        let mut p = ProactiveParams::default();
+        p.media_allowed_triggers.push("bedtime".into());
+        let mut c = ctx(23, 40, 60, None);
+        c.mode = DesktopMode::Silent;
+        c.silent = Some(SilentReason::Watching);
+        c.away_secs = 0; // 在看算在电脑前
+        assert!(allowed(&stub("bedtime", true, false), &c, &p, false));
+        let mut t = Bedtime::new(NaiveTime::from_hms_opt(23, 30, 0).unwrap());
+        assert!(t.poll(&c).is_some());
+    }
+
+    #[test]
+    fn meeting_blocks_even_whitelisted() {
+        let mut p = ProactiveParams::default();
+        p.media_allowed_triggers = vec!["daily-at".into(), "sedentary".into()];
+        p.fullscreen_allowed_triggers = vec!["daily-at".into()];
+        let mut c = ctx(12, 0, 0, None);
+        c.mode = DesktopMode::Silent;
+        c.silent = Some(SilentReason::Meeting);
+        assert!(!allowed(&stub("daily-at", true, false), &c, &p, false));
+        assert!(!allowed(&stub("sedentary", true, false), &c, &p, false));
+    }
+
+    #[test]
+    fn whitelist_chit_chat_ids_still_blocked() {
+        let mut p = ProactiveParams::default();
+        p.media_allowed_triggers = vec!["long-no-chat".into(), "encourage".into(), "sedentary".into()];
+        p.fullscreen_allowed_triggers = vec!["welcome-back".into(), "daily-at".into()];
+        let mut c = ctx(12, 0, 0, None);
+        c.mode = DesktopMode::Silent;
+        c.silent = Some(SilentReason::Watching);
+        assert!(!allowed(&stub("long-no-chat", false, false), &c, &p, false));
+        assert!(!allowed(&stub("encourage", false, true), &c, &p, false));
+        assert!(allowed(&stub("sedentary", true, false), &c, &p, false));
+        c.silent = Some(SilentReason::Fullscreen);
+        assert!(!allowed(&stub("welcome-back", false, false), &c, &p, false));
+        assert!(allowed(&stub("daily-at", true, false), &c, &p, false));
+    }
+
+    #[test]
+    fn user_hidden_and_pet_hidden_without_desktop_modes() {
+        let p = ProactiveParams::default();
+        let mut c = ctx(12, 0, 0, None);
+        c.user_hidden = true;
+        c.pet_hidden = true;
+        assert!(!allowed(&stub("daily-at", true, false), &c, &p, false));
+        // 关掉桌面状态、全屏隐藏：silent 为空，pet_hidden 仍拦住
+        c.user_hidden = false;
+        c.silent = None;
+        c.mode = DesktopMode::Normal;
+        c.pet_hidden = true;
+        assert!(!allowed(&stub("daily-at", true, false), &c, &p, false));
+    }
+
+    #[test]
+    fn away_secs_zero_while_watching_keeps_sedentary_and_skips_welcome_back() {
+        // 在看时 away_secs 为 0：久坐继续计时；看完碰鼠标不触发离开归来
+        let mut sed = Sedentary::new(3600);
+        let mut c = ctx(9, 0, 0, None);
+        c.away_secs = 0;
+        assert!(sed.poll(&c).is_none());
+        let mut c = ctx(10, 0, 4000, None); // user_idle 很长，但 away 仍为 0
+        c.away_secs = 0;
+        assert!(sed.poll(&c).is_some());
+
+        let mut wb = WelcomeBack::new(3600);
+        let mut away = ctx(11, 0, 4000, None);
+        away.away_secs = 0; // 在看
+        wb.observe(&away);
+        let mut back = ctx(11, 1, 5, None);
+        back.away_secs = 5;
+        wb.observe(&back);
+        assert!(wb.poll(&back).is_none()); // 看视频不算离开
     }
 
     #[test]

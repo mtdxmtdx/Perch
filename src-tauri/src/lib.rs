@@ -1,4 +1,5 @@
 pub mod agents;
+mod awareness;
 mod autostart;
 mod chat;
 mod commands;
