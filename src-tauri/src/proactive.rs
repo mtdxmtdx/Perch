@@ -774,7 +774,8 @@ pub fn context(app: &AppHandle, p: &ProactiveParams) -> Context {
         (false, false)
     };
     let (mode, silent) = desktop_mode(p, fullscreen, fg.as_deref(), agents_busy, in_call, watching);
-    let away_secs = if matches!(silent, Some(SilentReason::Watching)) { 0 } else { idle };
+    // 在看（含全屏看视频）都算在电脑前：看完一部电影碰鼠标不算「离开归来」
+    let away_secs = if watching { 0 } else { idle };
     Context {
         now,
         user_idle_secs: idle,
@@ -1270,23 +1271,25 @@ mod tests {
     }
 
     #[test]
-    fn watching_whitelist_allows_sedentary_daily_bedtime() {
+    fn watching_whitelist_allows_sedentary_and_daily_by_default() {
         let p = ProactiveParams::default();
         let mut c = ctx(12, 0, 0, None);
         c.mode = DesktopMode::Silent;
         c.silent = Some(SilentReason::Watching);
         c.away_secs = 0;
-        for id in ["sedentary", "daily-at", "bedtime"] {
+        for id in ["sedentary", "daily-at"] {
             assert!(allowed(&stub(id, true, false), &c, &p, false), "{id}");
         }
+        assert!(!allowed(&stub("bedtime", true, false), &c, &p, false)); // 就寝默认不勾，可在设置里勾
         for id in ["encourage", "welcome-back", "long-no-chat"] {
             assert!(!allowed(&stub(id, false, id == "encourage"), &c, &p, false), "{id}");
         }
     }
 
     #[test]
-    fn watching_bedtime_allowed_with_defaults() {
-        let p = ProactiveParams::default();
+    fn watching_bedtime_allowed_when_checked() {
+        let mut p = ProactiveParams::default();
+        p.media_allowed_triggers.push("bedtime".into());
         let mut c = ctx(23, 40, 60, None);
         c.mode = DesktopMode::Silent;
         c.silent = Some(SilentReason::Watching);
