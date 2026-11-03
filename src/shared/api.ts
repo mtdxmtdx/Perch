@@ -236,6 +236,16 @@ export interface SkinEntry {
   name: string;
 }
 
+
+export interface AwarenessParams {
+  vision_tool: boolean;
+  vision_authorized: boolean;
+  see_screen_long_side: number;
+  capture_whitelist_mode: boolean;
+  capture_whitelist: string[];
+  capture_blocklist_user: string[];
+}
+
 export interface SettingsView {
   providers: ProviderView[];
   roles: Roles;
@@ -247,6 +257,9 @@ export interface SettingsView {
   voice: VoiceParams;
   agents: AgentsParams;
   proactive: ProactiveParams;
+  awareness: AwarenessParams;
+  captureLockedProcesses: string[];
+  captureLockedTitleKeywords: string[];
   tts: TtsParams;
   skins: SkinEntry[];
   picturesDir: string;
@@ -264,6 +277,7 @@ export interface SettingsIn {
   voice: VoiceParams;
   agents: AgentsParams;
   proactive: ProactiveParams;
+  awareness: AwarenessParams;
   tts: TtsParams;
 }
 

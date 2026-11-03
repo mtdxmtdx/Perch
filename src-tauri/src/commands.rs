@@ -1,6 +1,6 @@
 //! M2 的前端命令：设置、对话、记忆、窗口。
 
-use crate::config::{self, AgentsParams, ChatParams, ImageParams, Persona, ProactiveParams, Provider, Roles, ToolParams, TtsParams, VoiceParams};
+use crate::config::{self, AgentsParams, AwarenessParams, ChatParams, ImageParams, Persona, ProactiveParams, Provider, Roles, ToolParams, TtsParams, VoiceParams};
 use crate::files::{self, AttachmentIn};
 use crate::llm::{self, Endpoint};
 use crate::store::{Memory, Message};
@@ -33,6 +33,10 @@ pub struct SettingsView {
     pub voice: VoiceParams,
     pub agents: AgentsParams,
     pub proactive: ProactiveParams,
+    pub awareness: AwarenessParams,
+    /// 锁死名单（只读展示）
+    pub capture_locked_processes: Vec<String>,
+    pub capture_locked_title_keywords: Vec<String>,
     pub tts: TtsParams,
     pub skins: Vec<skin::SkinEntry>,
     /// 生成的图片另存到哪
@@ -52,6 +56,9 @@ pub struct SettingsIn {
     pub voice: VoiceParams,
     pub agents: AgentsParams,
     pub proactive: ProactiveParams,
+    /// 老版本设置页不发：沿用原来的
+    #[serde(default)]
+    pub awareness: Option<AwarenessParams>,
     /// 老版本的设置页不发这个字段：沿用原来的
     #[serde(default)]
     pub tts: Option<TtsParams>,
@@ -79,6 +86,9 @@ pub fn settings_get(state: State<AppState>) -> SettingsView {
         voice: cfg.voice,
         agents: cfg.agents,
         proactive: cfg.proactive,
+        awareness: cfg.awareness,
+        capture_locked_processes: crate::awareness::gate::LOCKED_PROCESSES.iter().map(|s| (*s).to_string()).collect(),
+        capture_locked_title_keywords: crate::awareness::gate::LOCKED_TITLE_KEYWORDS.iter().map(|s| (*s).to_string()).collect(),
         tts: cfg.tts,
         skins: skin::list(),
         pictures_dir: crate::tools::display(&crate::imagegen::pictures_dir()),
@@ -143,6 +153,9 @@ pub fn settings_save(app: AppHandle, state: State<AppState>, settings: SettingsI
         cfg.image = settings.image;
         cfg.voice = settings.voice;
         cfg.proactive = settings.proactive;
+        if let Some(a) = settings.awareness {
+            cfg.awareness = a;
+        }
         if let Some(t) = settings.tts {
             cfg.tts = t;
         }

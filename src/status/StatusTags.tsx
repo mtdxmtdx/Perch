@@ -44,13 +44,18 @@ export function StatusTags() {
   const sessions = useSessions();
   const [enabled, setEnabled] = useState(true);
   const [side, setSide] = useState<"left" | "right">("right");
+  const [seeing, setSeeing] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const reported = useRef("");
 
   useEffect(() => {
     const load = () => void api.settingsGet().then((s) => setEnabled(s.agents.status_tag !== false));
     load();
-    const uns = [listen("settings-changed", load), listen<"left" | "right">("status-side", (e) => setSide(e.payload))];
+    const uns = [
+      listen("settings-changed", load),
+      listen<"left" | "right">("status-side", (e) => setSide(e.payload)),
+      listen<boolean>("seeing-screen", (e) => setSeeing(!!e.payload)),
+    ];
     return () => uns.forEach((u) => void u.then((f) => f()));
   }, []);
 
@@ -58,11 +63,12 @@ export function StatusTags() {
     ? sessions.filter((s) => s.status !== "idle").sort((a, b) => ORDER.indexOf(a.status) - ORDER.indexOf(b.status))
     : [];
   const extra = shown.length - MAX_TAGS;
+  const hasContent = seeing || shown.length > 0;
 
   // 每次内容变化后量一下尺寸告诉后端（窗口大小跟着内容走）
   useLayoutEffect(() => {
     const el = box.current;
-    const size = shown.length && el ? [Math.ceil(el.offsetWidth), Math.ceil(el.offsetHeight)] : [0, 0];
+    const size = hasContent && el ? [Math.ceil(el.offsetWidth), Math.ceil(el.offsetHeight)] : [0, 0];
     const key = size.join("x");
     if (key !== reported.current) {
       reported.current = key;
@@ -70,9 +76,16 @@ export function StatusTags() {
     }
   });
 
-  if (!shown.length) return null;
+  if (!hasContent) return null;
   return (
     <div ref={box} className={`tags ${side}`}>
+      {seeing && (
+        <div className="tag seeing">
+          <span className="dot" />
+          <span className="who">Perch</span>
+          <span className="what">正在看屏</span>
+        </div>
+      )}
       {shown.slice(0, MAX_TAGS).map((s) => (
         <Tag key={s.agent + s.id} s={s} />
       ))}

@@ -210,7 +210,11 @@ fn push_tool_history(out: &mut Vec<ChatMessage>, m: &Message, reasoning: &str) {
 }
 
 async fn describe_image(ep: &Endpoint, file: &str, user_text: &str) -> Result<String, String> {
-    let url = files::image_data_url(file)?;
+    describe_image_url(ep, files::image_data_url(file)?, user_text).await
+}
+
+/// 同上，图片直接给 data URL（看屏的原图不落盘）
+pub(crate) async fn describe_image_url(ep: &Endpoint, url: String, user_text: &str) -> Result<String, String> {
     let prompt = if user_text.trim().is_empty() {
         "请描述这张图片。".to_string()
     } else {
@@ -313,6 +317,11 @@ struct Turn<'a> {
     seq: u32,
     /// 正在执行的这次调用 {"name","arguments"}，记进日志用来重建历史
     current_call: Option<String>,
+    /// 本轮是否已调用过 see_screen
+    see_screen_used: bool,
+    /// 对话模型支持图片时，工具结果后补一条带图的 user 消息（data URL）
+    pending_see_image: Option<(String /*process*/, String /*data url*/, String /*record text*/)>,
+    chat_supports_vision: bool,
 }
 
 impl Turn<'_> {
@@ -422,9 +431,94 @@ impl Turn<'_> {
                     }
                 }
             }
+            "see_screen" => self.run_see_screen(&rid, &args).await,
             other => format!("没有名为 {other} 的工具"),
         }
     }
+
+    async fn run_see_screen(&mut self, rid: &str, args: &Value) -> String {
+        let title = "看屏";
+        self.report(rid, title, "running", None);
+        if !(self.cfg.awareness.vision_tool && self.cfg.awareness.vision_authorized) {
+            let e = "未授权看屏，或看屏工具已关闭".to_string();
+            self.report(rid, title, "error", Some(e.clone()));
+            return e;
+        }
+        if self.see_screen_used {
+            let e = "本轮已经看过一次屏幕，请根据已有画面回答".to_string();
+            self.report(rid, title, "error", Some(e.clone()));
+            return e;
+        }
+        self.see_screen_used = true;
+        let scope = crate::awareness::Scope::parse(args.get("scope").and_then(Value::as_str));
+        crate::awareness::set_seeing(true);
+        refresh_seeing_ui(self.app);
+        let cfg = self.cfg.awareness.clone();
+        let captured = tokio::task::spawn_blocking(move || crate::awareness::capture(scope, &cfg)).await;
+        crate::awareness::set_seeing(false);
+        refresh_seeing_ui(self.app);
+        let shot = match captured {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                self.report(rid, title, "error", Some(e.clone()));
+                return e;
+            }
+            Err(e) => {
+                let e = format!("看屏任务失败：{e}");
+                self.report(rid, title, "error", Some(e.clone()));
+                return e;
+            }
+        };
+        let thumb_file = match files::save_image(&shot.thumb_png, "png") {
+            Ok(f) => f,
+            Err(e) => {
+                self.report(rid, title, "error", Some(e.clone()));
+                return format!("保存缩略图失败：{e}");
+            }
+        };
+        let record = format!("看了「{}」的窗口（{}×{}）", shot.process, shot.width, shot.height);
+        self.report(rid, title, "ok", Some(record.clone()));
+        self.images.push(AttachmentMeta {
+            kind: "image".into(),
+            name: format!("看屏 · {}", shot.process),
+            file: Some(thumb_file),
+            desc: Some(record.clone()),
+            note: Some(record.clone()),
+            call: None,
+        });
+
+        if self.chat_supports_vision {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&shot.png);
+            let url = format!("data:image/png;base64,{b64}");
+            self.pending_see_image = Some((shot.process.clone(), url, record.clone()));
+            format!(
+                "截图见下一条（程序：{}，{}×{}）。请根据画面回答用户。",
+                shot.process, shot.width, shot.height
+            )
+        } else if let Some(vision) = self
+            .cfg
+            .provider(self.cfg.roles.vision.as_deref())
+            .filter(|p| p.supports_vision)
+        {
+            use base64::Engine;
+            let url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&shot.png));
+            let ep = Endpoint::from_provider(vision);
+            let described = describe_image_url(&ep, url, &format!("这是用户「{}」窗口的截图", shot.process)).await;
+            match described {
+                Ok(text) => format!("{record}。画面转述：{text}"),
+                Err(e) => format!("{record}。视觉转述失败：{e}"),
+            }
+        } else {
+            "没有可用的看图模型，无法理解截图".into()
+        }
+    }
+}
+
+fn refresh_seeing_ui(app: &AppHandle) {
+    let on = crate::awareness::is_seeing();
+    let _ = app.emit("seeing-screen", on);
+    crate::tray::refresh_tooltip(app, on);
 }
 
 /// 回复里声称完成了文件操作的说法
@@ -441,7 +535,7 @@ fn claims_file_done(text: &str) -> bool {
 const NUDGE: &str = "【系统提示，不是用户说的】你刚才说已经完成了文件操作，但这一轮并没有调用任何工具，文件实际上没有任何变化。\
 请现在调用 write_file 或 edit_file 真正完成；如果做不到，就如实告诉用户没有完成。如果你刚才说的根本不是文件操作，就照常回答。不要提到这条提示。";
 
-fn tool_note(allowed: &[PathBuf], with_image: bool) -> String {
+fn tool_note(allowed: &[PathBuf], with_image: bool, with_see: bool) -> String {
     let mut s = String::from("\n\n## 工具\n");
     if !allowed.is_empty() {
         s.push_str("你可以用 read_file / write_file / edit_file 读写用户电脑上的文件，只允许访问这些目录：\n");
@@ -453,6 +547,9 @@ fn tool_note(allowed: &[PathBuf], with_image: bool) -> String {
     }
     if with_image {
         s.push_str("用户明确要求画图时，可以用 generate_image 生成图片。\n");
+    }
+    if with_see {
+        s.push_str("用户明确要求看屏幕时，可以用 see_screen；默认截当前工作窗口，弹窗/菜单/对话框用 scope:\"screen\"。每轮最多看一次。\n");
     }
     s
 }
@@ -558,20 +655,32 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
         relation_note.as_deref(),
     );
 
-    // 工具：模型支持、用户开启，且有可用的目录或生图模型
+    // 工具：模型支持、用户开启，且有可用的目录 / 生图 / 看屏 之一
     let allowed = tools::canonical_allowed(&cfg.tools.allowed_dirs);
     let with_image = cfg.provider(cfg.roles.image.as_deref()).is_some();
-    let tools_on = cfg.tools.enabled && provider.supports_tools && (!allowed.is_empty() || with_image);
-    let mut tool_defs = tools_on.then(|| tools::definitions(with_image));
+    let has_vision_model = provider.supports_vision
+        || cfg.provider(cfg.roles.vision.as_deref()).is_some_and(|p| p.supports_vision);
+    let can_see = tools::see_screen_enabled(
+        cfg.awareness.vision_tool,
+        cfg.awareness.vision_authorized,
+        has_vision_model,
+    );
+    let tools_on = cfg.tools.enabled && provider.supports_tools && (!allowed.is_empty() || with_image || can_see);
+    let mut tool_defs = tools_on.then(|| tools::definitions(with_image, can_see));
     if let Some(defs) = tool_defs.as_mut() {
         if allowed.is_empty() {
-            // 没配目录时只保留生图
+            // 没配目录时去掉文件工具，保留生图 / 看屏
             if let Some(arr) = defs.as_array_mut() {
-                arr.retain(|t| t.pointer("/function/name").and_then(Value::as_str) == Some("generate_image"));
+                arr.retain(|t| {
+                    matches!(
+                        t.pointer("/function/name").and_then(Value::as_str),
+                        Some("generate_image" | "see_screen")
+                    )
+                });
             }
         }
         if let Some(llm::Content::Text(sys)) = messages[0].content.as_mut() {
-            sys.push_str(&tool_note(&allowed, with_image));
+            sys.push_str(&tool_note(&allowed, with_image, can_see));
         }
     }
 
@@ -583,7 +692,20 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
     let file_tools_on = tool_defs.is_some() && !allowed.is_empty();
     // 每轮最多纠正一次"说做了但没调用工具"
     let mut nudged = false;
-    let mut turn = Turn { app: &app, cfg: &cfg, persona: persona.id.clone(), allowed, allow_all_writes: false, log: Vec::new(), images: Vec::new(), seq: 0, current_call: None };
+    let mut turn = Turn {
+        app: &app,
+        cfg: &cfg,
+        persona: persona.id.clone(),
+        allowed,
+        allow_all_writes: false,
+        log: Vec::new(),
+        images: Vec::new(),
+        seq: 0,
+        current_call: None,
+        see_screen_used: false,
+        pending_see_image: None,
+        chat_supports_vision: provider.supports_vision,
+    };
     let mut final_text = String::new();
     // 调用工具那几步的思考 / 最后回答那一步的思考
     let mut tools_reasoning = String::new();
@@ -652,6 +774,16 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
                 turn.run(call).await
             };
             messages.push(ChatMessage::tool_result(&call.id, result));
+        }
+        if let Some((proc, url, _record)) = turn.pending_see_image.take() {
+            // OpenAI 兼容接口的 tool 消息不能带图：紧跟一条 user 消息附图
+            messages.push(ChatMessage::parts(
+                "user",
+                vec![
+                    Part::Text { text: format!("（系统）下面是 see_screen 截到的「{proc}」窗口画面，请据此回答用户。") },
+                    Part::ImageUrl { image_url: ImageUrl { url } },
+                ],
+            ));
         }
         if calls_used >= max_calls {
             // 下一次不再提供工具，逼模型给出回答
