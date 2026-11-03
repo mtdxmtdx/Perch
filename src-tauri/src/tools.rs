@@ -484,15 +484,14 @@ mod tests {
 mod see_screen_tests {
     use super::*;
 
-    fn names(v: &serde_json::Value) -> Vec<&str> {
+    fn names(v: &serde_json::Value) -> Vec<String> {
         v.as_array()
             .unwrap()
             .iter()
-            .filter_map(|t| t.pointer("/function/name").and_then(|x| x.as_str()))
+            .filter_map(|t| t.pointer("/function/name").and_then(|x| x.as_str()).map(str::to_string))
             .collect()
     }
 
-    #[test]
     #[test]
     fn see_screen_enabled_requires_auth_and_model() {
         assert!(!see_screen_enabled(true, false, true));
@@ -504,14 +503,14 @@ mod see_screen_tests {
     #[test]
     fn see_screen_only_when_flagged() {
         let n = names(&definitions(false, false));
-        assert!(!n.contains(&"see_screen"));
-        assert!(!n.contains(&"generate_image"));
+        assert!(!n.iter().any(|x| x == "see_screen"));
+        assert!(!n.iter().any(|x| x == "generate_image"));
         let n = names(&definitions(true, true));
-        assert!(n.contains(&"see_screen"));
-        assert!(n.contains(&"generate_image"));
+        assert!(n.iter().any(|x| x == "see_screen"));
+        assert!(n.iter().any(|x| x == "generate_image"));
         let n = names(&definitions(false, true));
-        assert!(n.contains(&"see_screen"));
-        assert!(!n.contains(&"generate_image"));
+        assert!(n.iter().any(|x| x == "see_screen"));
+        assert!(!n.iter().any(|x| x == "generate_image"));
     }
 
     #[test]

@@ -5,10 +5,7 @@ pub mod cuts;
 pub mod gate;
 pub mod signals;
 
-pub use capture::{
-    capture, downscale_area_average, encode_png_rgba, is_seeing, note_foreground, set_seeing,
-    target_record, Scope, Shot,
-};
-pub use cuts::{hsv_grid_from_rgba, is_significant, score_pair, SIGNIFICANT_CHANGE_SCORE};
-pub use gate::{gate, CaptureDeny, WindowInfo};
-pub use signals::{signals, Signals};
+pub use capture::{capture, is_seeing, note_foreground, set_seeing, Scope};
+pub use cuts::{is_significant, score_pair};
+pub use gate::gate;
+pub use signals::signals;

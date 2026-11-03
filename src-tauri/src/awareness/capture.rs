@@ -230,7 +230,7 @@ pub fn resolve_target() -> Result<WindowInfo, CaptureDeny> {
         if t.hwnd == 0 {
             return Err(CaptureDeny::NoTarget);
         }
-        Ok(WindowInfo { hwnd: t.hwnd, pid: t.pid, process: t.process, title: String::new() })
+        Ok(WindowInfo { hwnd: t.hwnd, process: t.process, title: String::new() })
     }
 }
 
@@ -240,7 +240,7 @@ fn resolve_target_windows() -> Result<WindowInfo, CaptureDeny> {
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowTextW, IsIconic, IsWindow};
 
     let t = target_record();
-    if t.hwnd == 0 || !unsafe { IsWindow(win::hwnd(t.hwnd)).as_bool() } {
+    if t.hwnd == 0 || !unsafe { IsWindow(Some(win::hwnd(t.hwnd))).as_bool() } {
         return Err(CaptureDeny::NoTarget);
     }
     if unsafe { IsIconic(win::hwnd(t.hwnd)).as_bool() } || !win::is_visible(t.hwnd) {
@@ -259,14 +259,15 @@ fn resolve_target_windows() -> Result<WindowInfo, CaptureDeny> {
     } else {
         t.process.clone()
     };
-    Ok(WindowInfo { hwnd: t.hwnd, pid: t.pid, process, title })
+    Ok(WindowInfo { hwnd: t.hwnd, process, title })
 }
 
 /// 枚举某显示器上可见、未最小化、未 cloaked 的顶层窗口（不含工具窗）
 #[cfg(windows)]
 pub fn visible_windows_on_monitor(monitor: isize) -> Vec<WindowInfo> {
     use crate::pet::win;
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowLongPtrW, GetWindowTextW, GWL_EXSTYLE, GWL_STYLE, WS_EX_TOOLWINDOW,
         WS_VISIBLE,
@@ -305,7 +306,7 @@ pub fn visible_windows_on_monitor(monitor: isize) -> Vec<WindowInfo> {
         if process.is_empty() && title.is_empty() {
             return BOOL(1);
         }
-        data.out.push(WindowInfo { hwnd: raw, pid, process, title });
+        data.out.push(WindowInfo { hwnd: raw, process, title });
         BOOL(1)
     }
     let mut data = Data { monitor, self_pid: std::process::id(), out: Vec::new() };
@@ -406,7 +407,8 @@ impl Drop for ExcludeFromCaptureGuard {
 #[cfg(windows)]
 fn enum_self_top_level(self_pid: u32) -> Vec<isize> {
     use crate::pet::win;
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
     struct D { pid: u32, out: Vec<isize> }
     unsafe extern "system" fn cb(hwnd: HWND, lp: LPARAM) -> BOOL {
@@ -539,6 +541,26 @@ mod tests {
             mixed[i * 4] = 200;
         }
         assert!(!is_mostly_black(&mixed, 8, 0.98));
+    }
+
+    /// 真实截一次前台窗口（需要桌面会话）：cargo test -- --ignored wgc_grabs
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn wgc_grabs_foreground_window() {
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        let hwnd = unsafe { GetForegroundWindow() }.0 as isize;
+        assert_ne!(hwnd, 0);
+        let (w, h, bgra) = wgc_grab_window(hwnd).expect("grab");
+        assert!(w > 0 && h > 0);
+        assert_eq!(bgra.len(), (w * h * 4) as usize);
+        let shot = prepare_shot(&bgra, w, h, 1280, true).expect("shot");
+        assert!(shot.width.max(shot.height) <= 1280);
+        let dir = std::env::temp_dir().join("perch-wgc-test");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("shot.png"), &shot.png).unwrap();
+        std::fs::write(dir.join("thumb.png"), &shot.thumb_png).unwrap();
+        eprintln!("{}x{} -> {}x{} {:?}", w, h, shot.width, shot.height, dir);
     }
 
     #[test]

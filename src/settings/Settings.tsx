@@ -1215,27 +1215,9 @@ function AwarenessTab({ draft, update, locked }: TabProps & { locked: { processe
           />
         </div>
         <label className="small muted" style={{ marginTop: 8, display: "block" }}>
-          进程规则（每行：进程名，可选 | 标题关键字）。例：code 或 chrome|YouTube
+          进程规则（每行一条：进程名，或「进程名|标题关键字」。例：code、chrome|YouTube）
         </label>
-        <textarea
-          rows={4}
-          disabled={!a.proactive_vision}
-          value={a.vision_process_rules
-            .map((r) => (r.title_keyword ? `${r.process}|${r.title_keyword}` : r.process))
-            .join("\n")}
-          onChange={(e) => {
-            const rules: VisionProcessRule[] = e.target.value
-              .split(/\n|,/)
-              .map((line) => line.trim())
-              .filter(Boolean)
-              .map((line) => {
-                const [process, ...rest] = line.split("|");
-                const kw = rest.join("|").trim();
-                return { process: process.trim(), title_keyword: kw ? kw : null };
-              });
-            set({ vision_process_rules: rules });
-          }}
-        />
+        <RulesInput value={a.vision_process_rules} disabled={!a.proactive_vision} onChange={(v) => set({ vision_process_rules: v })} />
       </section>
 
       <section>
@@ -1498,6 +1480,27 @@ function TriggerChecklist({
       ))}
     </div>
   );
+}
+
+/** 主动看屏规则：每行「进程名」或「进程名|标题关键字」；失去焦点时才解析，免得换行和 | 被吞掉 */
+function RulesInput({ value, disabled, onChange }: { value: VisionProcessRule[]; disabled?: boolean; onChange: (v: VisionProcessRule[]) => void }) {
+  const show = (rules: VisionProcessRule[]) => rules.map((r) => (r.title_keyword ? `${r.process}|${r.title_keyword}` : r.process)).join("\n");
+  const [text, setText] = useState(show(value));
+  useEffect(() => setText(show(value)), [value]);
+  const commit = () =>
+    onChange(
+      text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [process, ...rest] = line.split("|");
+          const kw = rest.join("|").trim();
+          return { process: process.trim(), title_keyword: kw || null };
+        })
+        .filter((r) => r.process),
+    );
+  return <textarea rows={4} value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onBlur={commit} />;
 }
 
 /** 用逗号或换行分开的名字列表；失去焦点时才拆分，免得打逗号时被吞掉 */

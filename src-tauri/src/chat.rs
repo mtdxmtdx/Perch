@@ -210,7 +210,11 @@ fn push_tool_history(out: &mut Vec<ChatMessage>, m: &Message, reasoning: &str) {
 }
 
 async fn describe_image(ep: &Endpoint, file: &str, user_text: &str) -> Result<String, String> {
-    let url = files::image_data_url(file)?;
+    describe_image_url(ep, files::image_data_url(file)?, user_text).await
+}
+
+/// 同上，图片直接给 data URL（看屏的原图不落盘）
+pub(crate) async fn describe_image_url(ep: &Endpoint, url: String, user_text: &str) -> Result<String, String> {
     let prompt = if user_text.trim().is_empty() {
         "请描述这张图片。".to_string()
     } else {
@@ -497,14 +501,10 @@ impl Turn<'_> {
             .provider(self.cfg.roles.vision.as_deref())
             .filter(|p| p.supports_vision)
         {
-            let tmp = match files::save_image(&shot.png, "png") {
-                Ok(f) => f,
-                Err(e) => return format!("准备转述失败：{e}"),
-            };
+            use base64::Engine;
+            let url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&shot.png));
             let ep = Endpoint::from_provider(vision);
-            let described =
-                describe_image(&ep, &tmp, &format!("这是用户「{}」窗口的截图", shot.process)).await;
-            let _ = std::fs::remove_file(files::attachments_dir().join(&tmp));
+            let described = describe_image_url(&ep, url, &format!("这是用户「{}」窗口的截图", shot.process)).await;
             match described {
                 Ok(text) => format!("{record}。画面转述：{text}"),
                 Err(e) => format!("{record}。视觉转述失败：{e}"),
@@ -554,11 +554,7 @@ fn tool_note(allowed: &[PathBuf], with_image: bool, with_see: bool) -> String {
     s
 }
 
-/// 桌宠主动说的话记进对话：用户回复时，模型知道自己刚说了什么
-pub(crate) fn add_assistant_message(app: &AppHandle, persona: &str, text: &str) -> Result<(), String> {
-    add_assistant_message_with_atts(app, persona, text, &[])
-}
-
+/// 桌宠主动说的话记进对话（可带附件，比如看屏缩略图）：用户回复时，模型知道自己刚说了什么
 pub(crate) fn add_assistant_message_with_atts(
     app: &AppHandle,
     persona: &str,
@@ -572,15 +568,6 @@ pub(crate) fn add_assistant_message_with_atts(
         .map_err(|e| e.to_string())?;
     emit(app, ChatEvent::Added { persona: persona.to_string(), message: msg });
     Ok(())
-}
-
-/// 主动看屏：复用视觉转述（给 proactive 用）
-pub(crate) async fn describe_image_for_proactive(
-    ep: &Endpoint,
-    file: &str,
-    user_text: &str,
-) -> Result<String, String> {
-    describe_image(ep, file, user_text).await
 }
 
 /// 正在回复中（主动聊天据此判断能不能打扰）
