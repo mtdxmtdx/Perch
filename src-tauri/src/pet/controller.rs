@@ -62,6 +62,8 @@ struct Ctl {
     last_fs_check: Instant,
     shown: bool,
     anim: &'static str,
+    /// 上次告诉前端的水平朝向（1 右，-1 左，0 还没动过）
+    facing: f64,
     ignore_cursor: Option<bool>,
     last_pos: Option<(i32, i32)>,
     bubble_pos: Option<(i32, i32)>,
@@ -114,6 +116,7 @@ impl Ctl {
             last_fs_check: Instant::now(),
             shown: false,
             anim: "",
+            facing: 0.0,
             ignore_cursor: None,
             last_pos: None,
             bubble_pos: None,
@@ -463,6 +466,17 @@ impl Ctl {
             (head_y, self.fy, w * 0.2, status_size)
         });
         self.follow_status(place);
+
+        // 朝向跟着水平移动走，停下时保持。先于动画发出，换动画的第一帧朝向就是对的
+        let moving = match &self.mode {
+            Mode::Air { vx, .. } if vx.abs() > 1e-3 => Some(vx.signum()),
+            Mode::Grounded { act: Act::Walk { dir }, .. } => Some(dir.signum()),
+            _ => None,
+        };
+        if let Some(d) = moving.filter(|d| *d != self.facing) {
+            self.facing = d;
+            let _ = self.app.emit_to("pet", "pet-facing", if d > 0.0 { "right" } else { "left" });
+        }
 
         let anim = match &self.mode {
             // 优先级：自己的对话 > agent 状态 > 自主行为

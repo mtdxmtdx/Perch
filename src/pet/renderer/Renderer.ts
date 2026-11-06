@@ -65,6 +65,8 @@ export interface LoadResult {
   frameMasks?: FrameMasks;
 }
 
+export type Facing = "left" | "right";
+
 export interface Renderer {
   /** 挂到桌宠窗口里：自己建画布（2D、WebGL 都行）放进 host，铺满 host */
   mount(host: HTMLElement): void;
@@ -72,6 +74,8 @@ export interface Renderer {
   load(src: SkinSource): Promise<LoadResult>;
   /** 播放某个桌宠状态的动画（见 PET_ANIMS）；重复调用同一个名字不会重新开始 */
   play(anim: string): void;
+  /** 水平朝向变了（可选）。跳跃、下落这些状态名不带方向，要靠它知道该朝哪边；停下时保持上次的朝向 */
+  face?(dir: Facing): void;
   onHit(cb: (update: HitUpdate) => void): void;
   /** 窗口尺寸变了 */
   resize(): void;

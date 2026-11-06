@@ -1,5 +1,6 @@
 {
   "rows": 12,
+  "airFacing": "right",
   "animations": {
     "sleep": {
       "row": 9,
