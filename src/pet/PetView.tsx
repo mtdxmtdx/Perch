@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { HitMask, HitUpdate, Renderer } from "./renderer/Renderer";
+import type { Facing, HitMask, HitUpdate, Renderer } from "./renderer/Renderer";
 import { createRenderer } from "./renderer/registry";
 import { loadSkinSource, PLACEHOLDER_SOURCE, rendererKind, type SkinSource } from "./skin/source";
 
@@ -14,6 +14,7 @@ export function PetView() {
     let renderer: Renderer | null = null;
     let kind = "";
     let anim = "idle";
+    let facing: Facing | null = null;
     let disposed = false;
     // 皮肤尺寸和位置发给 Rust 之前，运行时掩码先存着，发完再补上（set_skin_metrics 会清掉旧掩码）
     let metricsSent = false;
@@ -46,6 +47,7 @@ export function PetView() {
       pendingMask = null;
       const { layout, frameMasks } = await renderer.load(src);
       if (disposed) return;
+      if (facing) renderer.face?.(facing);
       renderer.play(anim);
       await invoke("set_skin_metrics", { metrics: { ...layout, ...frameMasks } });
       metricsSent = true;
@@ -73,6 +75,10 @@ export function PetView() {
       listen<string>("pet-anim", (e) => {
         anim = e.payload;
         renderer?.play(anim);
+      }),
+      listen<Facing>("pet-facing", (e) => {
+        facing = e.payload;
+        renderer?.face?.(facing);
       }),
       listen("pet-skin-changed", () => void loadSkin()),
       // 把文件拖到桌宠身上：弹出输入气泡并带上这些文件

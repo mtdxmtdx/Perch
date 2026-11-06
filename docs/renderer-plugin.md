@@ -78,6 +78,7 @@ TypeScript 定义在 [src/pet/renderer/Renderer.ts](../src/pet/renderer/Renderer
 | `mount(host)` | 自己建画布（2D、WebGL 都行）放进 `host`，铺满它。画布大小按 `window.innerWidth/innerHeight × devicePixelRatio` |
 | `load(src)` | 加载皮肤，返回位置信息（见下）。换皮肤时会再次调用，换完继续播当前状态 |
 | `play(name)` | 播放某个状态。同一个名字重复调用不要重新开始。没有对应动画的状态，自己挑一个相近的 |
+| `face(dir)` | 可选。水平朝向变了，`dir` 是 `"left"` 或 `"right"`，走路和跳跃时都会调用，停下时保持。`jump`、`fall` 这些状态名不带方向，要靠它 |
 | `onHit(cb)` | 登记回调，画面变化时用它上报鼠标穿透信息 |
 | `resize()` | 窗口尺寸变了（用户改了"大小"设置） |
 | `destroy()` | 停止动画、释放资源、移除画布 |

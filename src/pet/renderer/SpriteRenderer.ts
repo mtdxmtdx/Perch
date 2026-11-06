@@ -1,4 +1,4 @@
-import type { HitUpdate, LoadResult, Renderer } from "./Renderer";
+import type { Facing, HitUpdate, LoadResult, Renderer } from "./Renderer";
 import type { SkinSource } from "../skin/source";
 import { COLS, loadCodexSkin, type AnimSpec, type LoadedSkin } from "../skin/codexPet";
 import { LiveMask, spriteMasks } from "../masks";
@@ -7,6 +7,9 @@ import { LiveMask, spriteMasks } from "../masks";
  * 内置渲染器：Codex 格式的精灵图集，画在 2D 画布上。
  * 鼠标穿透默认预先算好每帧掩码；skin.json 写 "hitTest": "live" 时改为每次换帧从画面读。
  */
+/** 这几个状态只有一行画面，方向相反时要镜像；走路左右各有一行，不用 */
+const AIR_ANIMS = new Set(["jump", "fall", "land"]);
+
 export class SpriteRenderer implements Renderer {
   private canvas?: HTMLCanvasElement;
   private ctx?: CanvasRenderingContext2D;
@@ -17,6 +20,7 @@ export class SpriteRenderer implements Renderer {
   private timer?: number;
   private hitCb?: (u: HitUpdate) => void;
   private live?: LiveMask;
+  private facing?: Facing;
 
   mount(host: HTMLElement) {
     const canvas = document.createElement("canvas");
@@ -47,6 +51,11 @@ export class SpriteRenderer implements Renderer {
     this.spec = spec;
     this.step = 0;
     this.schedule();
+  }
+
+  face(dir: Facing) {
+    this.facing = dir;
+    if (AIR_ANIMS.has(this.animName)) this.draw();
   }
 
   onHit(cb: (u: HitUpdate) => void) {
@@ -87,6 +96,8 @@ export class SpriteRenderer implements Renderer {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
+    const mirror = !!skin.airFacing && !!this.facing && skin.airFacing !== this.facing && AIR_ANIMS.has(this.animName);
+    ctx.setTransform(mirror ? -1 : 1, 0, 0, 1, mirror ? canvas.width : 0, 0);
     ctx.drawImage(
       skin.sheet,
       col * skin.cellW,
@@ -98,6 +109,7 @@ export class SpriteRenderer implements Renderer {
       canvas.width,
       canvas.height,
     );
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     if (this.live) {
       const mask = this.live.sample(canvas);
       if (mask) this.hitCb?.({ mask });

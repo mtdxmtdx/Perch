@@ -41,6 +41,8 @@ export interface LoadedSkin {
   anims: Record<string, AnimSpec>;
   /** skin.json 里定义了"坐"的动画（sit）：有才会坐在窗沿上 */
   canSit: boolean;
+  /** skin.json 的 airFacing：跳跃、下落、落地这几行画的是朝哪边。写了才会在反方向时镜像 */
+  airFacing?: "left" | "right";
 }
 
 function fullRow(row: number, loop = true, speed = 1): AnimSpec {
@@ -121,7 +123,7 @@ export async function loadCodexSkin(src: SkinSource): Promise<LoadedSkin> {
   const buf = await src.readFile(info.pet.spritesheetPath ?? "spritesheet.webp");
   const bmp = await createImageBitmap(new Blob([buf]));
   // Perch 自己的扩展：skin.json 可以用 rows 声明更多行（比如多一行"坐"），否则按 Codex 规定 9 行（v2 为 11 行）
-  const extra = info.overrides as { rows?: unknown; animations?: Record<string, unknown> } | null;
+  const extra = info.overrides as { rows?: unknown; airFacing?: unknown; animations?: Record<string, unknown> } | null;
   const declared = typeof extra?.rows === "number" && Number.isInteger(extra.rows) && extra.rows >= 9 && extra.rows <= 32 ? extra.rows : null;
   const rows = declared ?? (info.pet.spriteVersionNumber === 2 ? 11 : 9);
   const anims = defaultAnims();
@@ -137,5 +139,6 @@ export async function loadCodexSkin(src: SkinSource): Promise<LoadedSkin> {
     cellH: bmp.height / rows,
     anims,
     canSit: !!extra?.animations?.sit,
+    airFacing: extra?.airFacing === "left" || extra?.airFacing === "right" ? extra.airFacing : undefined,
   };
 }
