@@ -121,6 +121,85 @@ pub fn speak(app: &AppHandle, text: &str, what: What) {
     });
 }
 
+/// 对话回复边生成边读：回复开始时 [`ReplyReader::start`]，每段新文字 [`ReplyReader::push`]，
+/// 说完时 [`ReplyReader::finish`]。句子切好一句就送去合成，读够 `reply_chars` 字就不再收。
+/// 关了逐句合成、或者选了朗读语言（要整段翻译）时不边生成边读，回复说完后整段读
+pub struct ReplyReader {
+    tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    markdown: MarkdownStream,
+    splitter: Splitter,
+    spoken: usize,
+    limit: usize,
+}
+
+impl ReplyReader {
+    /// 能边生成边读时返回 Some；返回 None 时照旧在回复说完后读
+    pub fn start(app: &AppHandle) -> Option<Self> {
+        let mut cfg = app.state::<AppState>().config.lock().unwrap().clone();
+        cfg.tts = cfg.tts.for_persona(&cfg.active_persona().voice);
+        let p = &cfg.tts;
+        if !wants(p, What::Reply) || !sound_allowed(app, p) || !p.split_sentences || speak_language(&cfg).is_some() {
+            return None;
+        }
+        if ACTIVE.load(Ordering::SeqCst) >= MAX_QUEUED {
+            return None;
+        }
+        let limit = p.reply_chars.max(10);
+        let generation = GENERATION.load(Ordering::SeqCst);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = app.clone();
+        set_active(&app, true);
+        tauri::async_runtime::spawn(async move {
+            let _turn = TURN.lock().await;
+            if GENERATION.load(Ordering::SeqCst) == generation {
+                if let Err(e) = play_pieces(&app, &cfg, rx, None, generation).await {
+                    eprintln!("[tts] 朗读失败：{e}");
+                }
+            }
+            set_active(&app, false);
+        });
+        Some(Self { tx: Some(tx), markdown: MarkdownStream::default(), splitter: Splitter::new(SENTENCE_MIN, SENTENCE_MAX), spoken: 0, limit })
+    }
+
+    pub fn push(&mut self, delta: &str) {
+        if self.tx.is_none() {
+            return;
+        }
+        let text = self.markdown.push(delta);
+        self.splitter.push(&text);
+        self.send_ready();
+    }
+
+    pub fn finish(mut self) {
+        if self.tx.is_none() {
+            return;
+        }
+        let text = self.markdown.finish();
+        self.splitter.push(&text);
+        self.splitter.finish();
+        self.send_ready();
+    }
+
+    /// 和 [`excerpt`] 一样按句子取到 limit 字：第一句就太长时截断，再加一句会超过时停下
+    fn send_ready(&mut self) {
+        for s in self.splitter.take_ready() {
+            let Some(tx) = &self.tx else { return };
+            let n = s.chars().count();
+            if self.spoken > 0 && self.spoken + n > self.limit {
+                self.tx = None; // 读够了，关掉让播放读完就结束
+                return;
+            }
+            let s: String = if n > self.limit { s.chars().take(self.limit).collect() } else { s };
+            self.spoken += s.chars().count();
+            let _ = tx.send(s);
+            if self.spoken >= self.limit {
+                self.tx = None;
+                return;
+            }
+        }
+    }
+}
+
 /// 设置页的"试听"：不管开关和当前状态，用传进来的设置读一句，出错返回原因。
 /// 给了人格就用这个人格的声音
 pub async fn test(app: &AppHandle, mut cfg: Config, text: &str, persona: Option<&str>) -> Result<(), String> {
@@ -163,7 +242,25 @@ async fn synth_and_play(app: &AppHandle, cfg: &Config, text: &str, generation: u
         return Ok(()); // 翻译期间被打断或者有新的要读
     }
     let lang = translated.as_ref().and(speak_language(cfg));
-    let pieces = sentences(translated.as_deref().unwrap_or(text), SENTENCE_MIN, SENTENCE_MAX);
+    let spoken = translated.as_deref().unwrap_or(text);
+    let pieces = if cfg.tts.split_sentences { sentences(spoken, SENTENCE_MIN, SENTENCE_MAX) } else { vec![spoken.to_string()] };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for piece in pieces {
+        let _ = tx.send(piece);
+    }
+    drop(tx);
+    play_pieces(app, cfg, rx, lang, generation).await
+}
+
+/// 一句句合成并播放从 pieces 收到的句子，直到它关闭或者被打断。
+/// 句子可以边收边读（对话回复还在生成时）
+async fn play_pieces(
+    app: &AppHandle,
+    cfg: &Config,
+    mut pieces: tokio::sync::mpsc::UnboundedReceiver<String>,
+    lang: Option<&str>,
+    generation: u64,
+) -> Result<(), String> {
     let interrupted = || GENERATION.load(Ordering::SeqCst) != generation;
 
     // 播放线程先开着，合成好一句就送过去一句；读这一句的同时合成下一句
@@ -173,18 +270,20 @@ async fn synth_and_play(app: &AppHandle, cfg: &Config, text: &str, generation: u
     let mut result = Ok(());
     // 说话动画放到已排队的音频读完为止
     let mut talk_until = Instant::now();
-    for (i, piece) in pieces.iter().enumerate() {
+    let mut i = 0;
+    while let Some(piece) = pieces.recv().await {
+        i += 1;
         if interrupted() {
             break;
         }
-        let audio = match synthesize(cfg, piece, lang).await.and_then(|wav| decode_wav(&wav)) {
+        let audio = match synthesize(cfg, &piece, lang).await.and_then(|wav| decode_wav(&wav)) {
             Ok(a) => a,
             Err(e) => {
                 // 后面的句子失败时已经读了一部分，只记下来
-                if i == 0 {
+                if i == 1 {
                     result = Err(e);
                 } else {
-                    eprintln!("[tts] 第 {} 句合成失败，后面的不读了：{e}", i + 1);
+                    eprintln!("[tts] 第 {i} 句合成失败，后面的不读了：{e}");
                 }
                 break;
             }
@@ -629,58 +728,214 @@ fn play(rx: std::sync::mpsc::Receiver<(Vec<f32>, u32)>, volume: f32, generation:
 
 // ---------- 文字处理 ----------
 
-/// 按句子切开要读的话，用来逐句合成。不足 min 字的句子并到下一句；超过 max 字的在逗号处切开，没有逗号就硬切
+/// 句末标点
+const ENDS: &str = "。！？!?；;…";
+/// 跟在句末标点后面、还算这一句的：更多标点、右引号和右括号
+const TRAIL: &str = "。！？!?；;….」』”\"’）)";
+
+/// 分句器：文字可以一段段送进来（对话回复边生成边读），切好的句子放在 ready 里。
+/// 不足 min 字的句子并到下一句；超过 max 字的在逗号处切开，没有逗号就硬切；空白合成一个空格
+pub struct Splitter {
+    min: usize,
+    max: usize,
+    cur: String,
+    /// 刚读到句末标点，后面再来的不是标点或右引号就切
+    ending: bool,
+    /// 刚读到英文句号，后面是空白或结尾才算句末（小数点不切）
+    dot: bool,
+    space: bool,
+    pending: String,
+    ready: Vec<String>,
+}
+
+impl Splitter {
+    pub fn new(min: usize, max: usize) -> Self {
+        Self { min, max, cur: String::new(), ending: false, dot: false, space: false, pending: String::new(), ready: Vec::new() }
+    }
+
+    pub fn push(&mut self, text: &str) {
+        for c in text.chars() {
+            self.feed(c);
+        }
+    }
+
+    fn feed(&mut self, c: char) {
+        if c.is_whitespace() {
+            if self.ending || self.dot {
+                self.complete();
+            } else if !self.cur.is_empty() {
+                self.space = true;
+            }
+            return;
+        }
+        if self.ending && !TRAIL.contains(c) {
+            self.complete();
+        }
+        self.dot = false;
+        if std::mem::take(&mut self.space) && !self.cur.is_empty() {
+            self.cur.push(' ');
+        }
+        self.cur.push(c);
+        if ENDS.contains(c) {
+            self.ending = true;
+        } else if c == '.' && !self.ending {
+            self.dot = true;
+        }
+        if self.cur.chars().count() > self.max {
+            self.cut_long();
+        }
+    }
+
+    /// 一句太长还没完：在前 max 字里最后一个逗号处切开，没有就在 max 字处硬切
+    fn cut_long(&mut self) {
+        let chars: Vec<char> = self.cur.chars().collect();
+        let cut = chars[..self.max]
+            .iter()
+            .rposition(|c| "，,、：:".contains(*c))
+            .map(|i| i + 1)
+            .filter(|&i| i >= self.min)
+            .unwrap_or(self.max);
+        let head: String = chars[..cut].iter().collect();
+        self.cur = chars[cut..].iter().collect::<String>().trim_start().to_string();
+        self.emit(head.trim().to_string());
+    }
+
+    fn complete(&mut self) {
+        let s = std::mem::take(&mut self.cur).trim().to_string();
+        self.ending = false;
+        self.dot = false;
+        self.space = false;
+        self.emit(s);
+    }
+
+    fn emit(&mut self, s: String) {
+        if s.is_empty() {
+            return;
+        }
+        if !self.pending.is_empty() && self.pending.chars().count() + s.chars().count() > self.max {
+            self.ready.push(std::mem::take(&mut self.pending));
+        }
+        self.pending.push_str(&s);
+        if self.pending.chars().count() >= self.min {
+            self.ready.push(std::mem::take(&mut self.pending));
+        }
+    }
+
+    /// 文字送完了：没切完的算一句，最后剩下的短句并到前一句（前一句还没被取走的话）
+    pub fn finish(&mut self) {
+        if !self.cur.is_empty() {
+            self.complete();
+        }
+        if self.pending.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending);
+        match self.ready.last_mut() {
+            Some(last) if last.chars().count() + pending.chars().count() <= self.max => last.push_str(&pending),
+            _ => self.ready.push(pending),
+        }
+    }
+
+    /// 取走已经切好的句子
+    pub fn take_ready(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.ready)
+    }
+}
+
+/// 按句子切开一整段话，用来逐句合成
 pub fn sentences(text: &str, min: usize, max: usize) -> Vec<String> {
-    const ENDS: &str = "。！？!?；;…";
-    // 跟在句末标点后面、还算这一句的：更多标点、右引号和右括号
-    const TRAIL: &str = "。！？!?；;….」』”\"’）)";
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut raw: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut ending = false;
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        cur.push(c);
-        // 英文句号后面要有空格或结尾才算句末（小数点不切）
-        if ENDS.contains(c) || (c == '.' && chars.peek().is_none_or(|n| n.is_whitespace())) {
-            ending = true;
+    let mut s = Splitter::new(min, max);
+    s.push(text);
+    s.finish();
+    s.take_ready()
+}
+
+/// 一边收 Markdown 一边去掉记号（和 [`plain_text`] 的规则一样）。
+/// 没收完的一行只放出到已经说完的最后一句为止：句末标点（连同后面的引号、括号）后面已经有别的字了，
+/// 这时在后面补一个空格，让分句器马上知道这句完了，不用等下一句写完。不能停在没写完的链接里；
+/// 以 ` 开头的行要等整行收完（可能是代码块的开头）
+#[derive(Default)]
+pub struct MarkdownStream {
+    line: String,
+    in_code: bool,
+    /// 这一行已经放出去的、去掉记号后的字数
+    sent: usize,
+}
+
+impl MarkdownStream {
+    pub fn push(&mut self, delta: &str) -> String {
+        let mut out = String::new();
+        for c in delta.chars() {
+            if c == '\n' {
+                out.push_str(&self.end_line());
+                out.push('\n');
+            } else {
+                self.line.push(c);
+            }
         }
-        if ending && !chars.peek().is_some_and(|n| TRAIL.contains(*n)) {
-            raw.push(std::mem::take(&mut cur));
-            ending = false;
-        }
+        out.push_str(&self.partial());
+        out
     }
-    raw.push(cur);
-    // 太长的在逗号处切
-    let mut split: Vec<String> = Vec::new();
-    for s in raw.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        let mut rest: Vec<char> = s.chars().collect();
-        while rest.len() > max {
-            let cut = rest[..max].iter().rposition(|c| "，,、：:".contains(*c)).map(|i| i + 1).filter(|&i| i >= min).unwrap_or(max);
-            split.push(rest[..cut].iter().collect::<String>().trim().to_string());
-            rest.drain(..cut);
-        }
-        split.push(rest.iter().collect::<String>().trim().to_string());
+
+    pub fn finish(&mut self) -> String {
+        self.end_line()
     }
-    // 太短的并到下一句；最后剩下的短句并到前一句
-    let mut out: Vec<String> = Vec::new();
-    let mut pending = String::new();
-    for s in split.into_iter().filter(|s| !s.is_empty()) {
-        if !pending.is_empty() && pending.chars().count() + s.chars().count() > max {
-            out.push(std::mem::take(&mut pending));
+
+    fn end_line(&mut self) -> String {
+        let line = std::mem::take(&mut self.line);
+        let sent = std::mem::take(&mut self.sent);
+        if line.trim_start().starts_with("```") {
+            let opening = !self.in_code;
+            self.in_code = !self.in_code;
+            return if opening { "（代码略）".into() } else { String::new() };
         }
-        pending.push_str(&s);
-        if pending.chars().count() >= min {
-            out.push(std::mem::take(&mut pending));
+        if self.in_code {
+            return String::new();
         }
+        clean_line(&line).chars().skip(sent).collect()
     }
-    if !pending.is_empty() {
-        match out.last_mut() {
-            Some(last) if last.chars().count() + pending.chars().count() <= max => last.push_str(&pending),
-            _ => out.push(pending),
+
+    fn partial(&mut self) -> String {
+        if self.in_code || self.line.trim_start().starts_with('`') {
+            return String::new();
         }
+        // 说完了的句子的结尾：句末标点和后面跟着的引号、括号，再后面已经有别的字
+        let chars: Vec<(usize, char)> = self.line.char_indices().collect();
+        let mut ends = Vec::new();
+        for (k, &(_, c)) in chars.iter().enumerate() {
+            let next = chars.get(k + 1).map(|x| x.1);
+            let end_here = ENDS.contains(c) || (c == '.' && next.is_some_and(char::is_whitespace));
+            if !end_here {
+                continue;
+            }
+            let mut j = k + 1;
+            while chars.get(j).is_some_and(|x| TRAIL.contains(x.1)) {
+                j += 1;
+            }
+            if let Some(&(i, _)) = chars.get(j) {
+                ends.push(i);
+            }
+        }
+        ends.dedup();
+        // 从右往左找一个能放出去的
+        while let Some(end) = ends.pop() {
+            let head = &self.line[..end];
+            let open_link = head.rfind('[').is_some_and(|b| !head[b..].contains(')'));
+            if open_link {
+                continue;
+            }
+            let clean = clean_line(head);
+            let n = clean.chars().count();
+            if n <= self.sent {
+                return String::new();
+            }
+            let mut out: String = clean.chars().skip(self.sent).collect();
+            out.push(' ');
+            self.sent = n;
+            return out;
+        }
+        String::new()
     }
-    out
 }
 
 /// 对话回复只读开头：按句子取，取到超过 max 字为止；第一句就太长时在 max 字处截断
@@ -716,6 +971,27 @@ pub fn excerpt(text: &str, max: usize) -> String {
     out
 }
 
+/// 一行 Markdown 去掉记号：标题、引用、列表符号，链接只留文字，去掉强调
+fn clean_line(line: &str) -> String {
+    let line = line.trim_start().trim_start_matches(['#', '>']).trim_start();
+    let line = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).unwrap_or(line);
+    // [文字](链接) → 文字
+    let mut rest = line;
+    let mut buf = String::new();
+    while let Some(i) = rest.find('[') {
+        match (rest[i..].find("]("), rest[i..].find(')')) {
+            (Some(j), Some(k)) if j < k => {
+                buf.push_str(&rest[..i]);
+                buf.push_str(&rest[i + 1..i + j]);
+                rest = &rest[i + k + 1..];
+            }
+            _ => break,
+        }
+    }
+    buf.push_str(rest);
+    buf.replace(['*', '`', '_'], "")
+}
+
 /// 读之前去掉 Markdown 记号：代码块换成"（代码略）"，链接只留文字，去掉强调、标题、引用符号
 pub fn plain_text(s: &str) -> String {
     let mut out = String::new();
@@ -731,23 +1007,7 @@ pub fn plain_text(s: &str) -> String {
         if in_code {
             continue;
         }
-        let line = line.trim_start().trim_start_matches(['#', '>']).trim_start();
-        let line = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).unwrap_or(line);
-        // [文字](链接) → 文字
-        let mut rest = line;
-        let mut buf = String::new();
-        while let Some(i) = rest.find('[') {
-            match (rest[i..].find("]("), rest[i..].find(')')) {
-                (Some(j), Some(k)) if j < k => {
-                    buf.push_str(&rest[..i]);
-                    buf.push_str(&rest[i + 1..i + j]);
-                    rest = &rest[i + k + 1..];
-                }
-                _ => break,
-            }
-        }
-        buf.push_str(rest);
-        out.push_str(&buf.replace(['*', '`', '_'], ""));
+        out.push_str(&clean_line(line));
         out.push('\n');
     }
     out.trim().to_string()
@@ -842,6 +1102,56 @@ mod tests {
         assert_eq!(sentences("一二三四五，六七八九十，甲乙丙丁戊。", 2, 8), ["一二三四五，", "六七八九十，", "甲乙丙丁戊。"]);
         assert_eq!(sentences("一二三四五六七八九十", 2, 4), ["一二三四", "五六七八", "九十"]);
         assert!(sentences("  ", 4, 80).is_empty());
+    }
+
+    #[test]
+    fn splitter_gives_the_same_sentences_when_fed_piece_by_piece() {
+        let text = "你好呀！今天天气真好。It costs 3.5 dollars. Nice!真的吗？！「对呀。」一二三四五，六七八九十，甲乙丙丁戊己庚辛壬癸。";
+        let whole = sentences(text, 4, 12);
+        let mut s = Splitter::new(4, 12);
+        let mut got = Vec::new();
+        for c in text.chars() {
+            s.push(&c.to_string());
+            got.extend(s.take_ready());
+        }
+        s.finish();
+        got.extend(s.take_ready());
+        assert_eq!(got, whole);
+        // 回复边生成边送：第一句后面一出现别的字就能取到
+        let mut m = MarkdownStream::default();
+        let mut s = Splitter::new(4, 80);
+        for d in ["好的，", "我来", "说一下。", "今天"] {
+            s.push(&m.push(d));
+        }
+        assert_eq!(s.take_ready(), ["好的，我来说一下。"]);
+        // 第一句一说完就能取到，不用等后面
+        let mut s = Splitter::new(4, 80);
+        s.push("今天天气真好。");
+        assert!(s.take_ready().is_empty()); // 后面可能还跟着引号
+        s.push("我");
+        assert_eq!(s.take_ready(), ["今天天气真好。"]);
+    }
+
+    #[test]
+    fn markdown_stream_matches_plain_text() {
+        let md = "# 标题\n**好的**，看 [文档](https://x.y/z)。还有呢\n```rust\nfn main() {}\n```\n- 第一条。\n> 引用";
+        let mut m = MarkdownStream::default();
+        let mut got = String::new();
+        for c in md.chars() {
+            got.push_str(&m.push(&c.to_string()));
+        }
+        got.push_str(&m.finish());
+        assert_eq!(got.split_whitespace().collect::<String>(), plain_text(md).split_whitespace().collect::<String>());
+        // 没写完的一行：说完的句子先放出来（后面补空格表示这句完了），没写完的链接不放
+        let mut m = MarkdownStream::default();
+        assert_eq!(m.push("**好的**。"), ""); // 后面可能还有引号
+        assert_eq!(m.push("看 [文"), "好的。 ");
+        assert_eq!(m.push("档](u)。」再"), "看 文档。」 ");
+        assert_eq!(m.finish(), "再");
+        // 代码块开头的 ` 要等整行
+        let mut m = MarkdownStream::default();
+        assert_eq!(m.push("``"), "");
+        assert_eq!(m.push("`\nlet a = 1;\n```\n"), "（代码略）\n\n\n");
     }
 
     #[test]

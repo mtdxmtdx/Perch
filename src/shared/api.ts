@@ -53,6 +53,7 @@ export interface TtsParams {
   local_start_script: string | null;
   local_lora: string | null;
   local_speaker: string | null;
+  split_sentences: boolean;
 }
 
 export interface DialogPair {

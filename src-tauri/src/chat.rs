@@ -717,6 +717,8 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
     let mut final_reasoning = String::new();
     let mut calls_used = 0usize;
     let max_calls = cfg.tools.max_calls.max(1);
+    // 能边生成边读时，回复一边出来一边读；否则说完后整段读
+    let mut reader = if crate::speak::pet_hidden(&app) { None } else { crate::tts::ReplyReader::start(&app) };
 
     let outcome: Result<(), String> = loop {
         let pid = persona.id.clone();
@@ -729,7 +731,13 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
                 set_speech(&app2, Some("talk"), None);
                 if need_sep {
                     emit(&app2, ChatEvent::Delta { persona: pid.clone(), text: "\n\n".into() });
+                    if let Some(r) = reader.as_mut() {
+                        r.push("\n\n");
+                    }
                 }
+            }
+            if let Some(r) = reader.as_mut() {
+                r.push(delta);
             }
             emit(&app2, ChatEvent::Delta { persona: pid.clone(), text: delta.to_string() });
         })
@@ -820,7 +828,10 @@ pub async fn send(app: AppHandle, text: String, attachments: Vec<AttachmentIn>) 
             eprintln!("[chat] 保存思考过程失败: {e}");
         }
     }
-    crate::speak::reply_finished(&app, &final_text);
+    match reader {
+        Some(r) => r.finish(),
+        None => crate::speak::reply_finished(&app, &final_text),
+    }
     emit(&app, ChatEvent::Done { persona: persona.id.clone(), message: msg });
     set_speech(&app, Some("talk"), Some(Instant::now() + TALK_LINGER));
     spawn_maintenance(app.clone(), persona);
