@@ -8,13 +8,18 @@
 //! - 桌宠主动说的话（agent 汇报、主动聊天）整句读；
 //! - 对话回复只读开头一小段（`reply_chars`），其余看文字。
 //!
+//! 打开「用日语说」时，朗读前先用辅助模型翻译成日语，显示的文字不变；翻译失败就读原文。
+//!
 //! 什么时候不出声：桌宠隐藏、全屏 / 开会 / 直播（静默状态）时不读；工作模式和免打扰时段默认也不读。
 //! 开始录音、发新消息、读下一句时打断正在读的。
 
 use crate::config::{Config, TtsParams};
-use crate::llm::Endpoint;
+use crate::llm::{self, ChatMessage, Endpoint};
 use crate::AppState;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
@@ -78,7 +83,7 @@ pub fn speak(app: &AppHandle, text: &str, what: What) {
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = synth_and_play(&app, &cfg, &text, generation).await {
+        if let Err(e) = synth_and_play(&app, &cfg, &text, generation, false).await {
             eprintln!("[tts] 朗读失败：{e}");
         }
     });
@@ -94,7 +99,8 @@ pub async fn test(app: &AppHandle, cfg: Config, text: &str) -> Result<(), String
         return Err("先选一个朗读引擎".into());
     }
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    synth_and_play(app, &cfg, &text, generation).await
+    // 试听时翻译失败要让用户看到原因
+    synth_and_play(app, &cfg, &text, generation, true).await
 }
 
 /// 打断正在读的（开始录音、发新消息时）
@@ -102,8 +108,19 @@ pub fn stop() {
     GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
-async fn synth_and_play(app: &AppHandle, cfg: &Config, text: &str, generation: u64) -> Result<(), String> {
-    let wav = synthesize(cfg, text).await?;
+async fn synth_and_play(app: &AppHandle, cfg: &Config, text: &str, generation: u64, strict: bool) -> Result<(), String> {
+    let japanese = match to_japanese(cfg, text).await {
+        Ok(t) => t,
+        Err(e) if strict => return Err(e),
+        Err(e) => {
+            eprintln!("[tts] 翻译成日语失败，读原文：{e}");
+            None
+        }
+    };
+    if GENERATION.load(Ordering::SeqCst) != generation {
+        return Ok(()); // 翻译期间被打断或者有新的要读
+    }
+    let wav = synthesize(cfg, japanese.as_deref().unwrap_or(text), japanese.is_some()).await?;
     if GENERATION.load(Ordering::SeqCst) != generation {
         return Ok(()); // 合成期间被打断或者有新的要读
     }
@@ -120,12 +137,47 @@ async fn synth_and_play(app: &AppHandle, cfg: &Config, text: &str, generation: u
         .map_err(|e| e.to_string())?
 }
 
+// ---------- 用日语说 ----------
+
+/// 有假名就当作已经是日语（只有汉字的话分不出来）
+fn has_kana(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, '\u{3040}'..='\u{30ff}'))
+}
+
+/// 模型偶尔会给译文加引号
+fn clean_translation(s: &str) -> String {
+    s.trim().trim_matches(|c: char| matches!(c, '"' | '“' | '”' | '「' | '」' | '『' | '』')).trim().to_string()
+}
+
+/// 要读的日语；没开「用日语说」时是 None
+async fn to_japanese(cfg: &Config, text: &str) -> Result<Option<String>, String> {
+    if !cfg.tts.speak_japanese {
+        return Ok(None);
+    }
+    if has_kana(text) {
+        return Ok(Some(text.to_string()));
+    }
+    let persona = cfg.active_persona();
+    let provider = cfg.aux_provider(&persona).ok_or("「用日语说」要先配一个对话或辅助模型来翻译")?;
+    let system = format!(
+        "把桌宠「{}」说的话翻译成自然的日语口语，用来语音朗读。保持原来的语气和情绪，人名和专有名词用日语的常见写法。\
+只输出译文，不要解释，不要加引号、括号或注音。",
+        persona.name
+    );
+    let messages = [ChatMessage::text("system", system), ChatMessage::text("user", text)];
+    let translated = clean_translation(&llm::chat_once(&Endpoint::from_provider(provider), &messages, Some(0.3)).await?);
+    if translated.is_empty() {
+        return Err("翻译模型没有返回内容".into());
+    }
+    Ok(Some(translated))
+}
+
 // ---------- 引擎 ----------
 
-async fn synthesize(cfg: &Config, text: &str) -> Result<Vec<u8>, String> {
+async fn synthesize(cfg: &Config, text: &str, japanese: bool) -> Result<Vec<u8>, String> {
     match cfg.tts.provider.as_str() {
         "cloud" => cloud(cfg, text).await,
-        "local" => local(&cfg.tts, text).await,
+        "local" => local(&cfg.tts, text, japanese).await,
         other => Err(format!("不认识的朗读引擎：{other}")),
     }
 }
@@ -165,22 +217,69 @@ async fn cloud(cfg: &Config, text: &str) -> Result<Vec<u8>, String> {
 }
 
 /// GPT-SoVITS 风格的本地服务：POST JSON，返回 wav
-async fn local(p: &TtsParams, text: &str) -> Result<Vec<u8>, String> {
+fn filled(s: &Option<String>) -> Option<&str> {
+    s.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// 请求内容：选了服务里的角色声音就用它，否则要有参考音频
+fn local_body(p: &TtsParams, text: &str, japanese: bool) -> Result<serde_json::Value, String> {
+    let mut body = serde_json::json!({
+        "text": text,
+        "text_language": if japanese { "ja" } else { p.local_text_lang.trim() },
+        "media_type": "wav",
+    });
+    if let Some(lora) = filled(&p.local_lora) {
+        body["lora_id"] = lora.into();
+        if let Some(s) = filled(&p.local_speaker) {
+            body["speaker"] = s.into();
+        }
+        return Ok(body);
+    }
+    body["refer_wav_path"] = filled(&p.local_ref_audio).ok_or("还没有选参考音频或角色声音")?.into();
+    if let Some(t) = filled(&p.local_ref_text) {
+        body["prompt_text"] = t.into();
+        body["prompt_language"] = p.local_ref_lang.trim().into();
+    }
+    Ok(body)
+}
+
+/// 服务里预置的一个角色声音
+#[derive(serde::Serialize, Debug, PartialEq, Eq)]
+pub struct LocalVoice {
+    pub lora: String,
+    pub speaker: Option<String>,
+}
+
+/// 解析 GET /lora/list 的返回；单说话人的 LoRA 没有 speakers
+fn parse_voices(v: &serde_json::Value) -> Option<Vec<LocalVoice>> {
+    let mut out = Vec::new();
+    for (lora, info) in v.get("loras")?.as_object()? {
+        let speakers: Vec<&str> = info.get("speakers").and_then(|s| s.as_array()).map(|a| a.iter().filter_map(|s| s.as_str()).collect()).unwrap_or_default();
+        if speakers.is_empty() {
+            out.push(LocalVoice { lora: lora.clone(), speaker: None });
+        }
+        out.extend(speakers.iter().map(|s| LocalVoice { lora: lora.clone(), speaker: Some((*s).to_string()) }));
+    }
+    Some(out)
+}
+
+/// 问本地服务有哪些角色声音（设置页用）
+pub async fn local_voices(url: &str) -> Result<Vec<LocalVoice>, String> {
+    let url = format!("{}/lora/list", url.trim().trim_end_matches('/'));
+    let resp = http().get(&url).timeout(Duration::from_secs(10)).send().await.map_err(|e| format!("连不上本地 TTS 服务：{e}"))?;
+    if !resp.status().is_success() {
+        return Err("这个服务没有提供角色声音列表，请用参考音频".into());
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| format!("读不懂服务返回的内容：{e}"))?;
+    parse_voices(&v).ok_or_else(|| "读不懂服务返回的内容".to_string())
+}
+
+async fn local(p: &TtsParams, text: &str, japanese: bool) -> Result<Vec<u8>, String> {
     let url = p.local_url.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("本地服务地址要以 http:// 开头，比如 http://127.0.0.1:9880/".into());
     }
-    let refer = p.local_ref_audio.as_deref().map(str::trim).filter(|s| !s.is_empty()).ok_or("还没有选参考音频")?;
-    let mut body = serde_json::json!({
-        "refer_wav_path": refer,
-        "text": text,
-        "text_language": p.local_text_lang.trim(),
-        "media_type": "wav",
-    });
-    if let Some(t) = p.local_ref_text.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        body["prompt_text"] = t.into();
-        body["prompt_language"] = p.local_ref_lang.trim().into();
-    }
+    let mut body = local_body(p, text, japanese)?;
     let speed = (p.speed - 1.0).abs() > 0.01;
     if speed {
         body["speed_factor"] = p.speed.clamp(0.5, 2.0).into();
@@ -194,6 +293,82 @@ async fn local(p: &TtsParams, text: &str) -> Result<Vec<u8>, String> {
         return wav_body(resp).await;
     }
     wav_body(resp).await
+}
+
+// ---------- 随 Perch 启动本地服务 ----------
+
+/// Perch 启动的服务进程。用户自己开的服务不在这里，退出时也不会动
+static SERVICE: Mutex<Option<Child>> = Mutex::new(None);
+
+/// 按设置在后台启动本地服务；服务已经在跑就不管
+pub fn autostart_service(app: &AppHandle) {
+    let p = app.state::<AppState>().config.lock().unwrap().tts.clone();
+    if p.provider != "local" || !p.local_autostart {
+        return;
+    }
+    let Some(script) = filled(&p.local_start_script).map(str::to_string) else { return };
+    tauri::async_runtime::spawn(async move {
+        // 有任何回应都算服务已经在跑（根路径没带参数时会返回错误，这没关系）
+        if http().get(p.local_url.trim()).timeout(Duration::from_millis(1500)).send().await.is_ok() {
+            eprintln!("[tts] 本地服务已经在运行");
+            return;
+        }
+        match start_service(Path::new(&script)) {
+            Ok(child) => {
+                eprintln!("[tts] 已启动本地服务 {script}");
+                *SERVICE.lock().unwrap() = Some(child);
+            }
+            Err(e) => eprintln!("[tts] 启动本地服务失败：{e}"),
+        }
+    });
+}
+
+/// 不开窗口运行脚本，输出写到数据目录的 tts-service.log。stdin 接空，脚本末尾的 pause 不会卡住
+fn start_service(script: &Path) -> Result<Child, String> {
+    if !script.is_file() {
+        return Err(format!("找不到 {}", script.display()));
+    }
+    let log = std::fs::File::create(crate::config::data_dir().join("tts-service.log")).map_err(|e| e.to_string())?;
+    let log2 = log.try_clone().map_err(|e| e.to_string())?;
+    let mut cmd = service_command(script);
+    if let Some(dir) = script.parent() {
+        cmd.current_dir(dir);
+    }
+    cmd.stdin(Stdio::null()).stdout(log).stderr(log2).spawn().map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn service_command(script: &Path) -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let ext = script.extension().and_then(|e| e.to_str()).unwrap_or_default().to_lowercase();
+    let mut cmd = if ext == "bat" || ext == "cmd" {
+        let mut c = Command::new("cmd");
+        // cmd /C 会去掉最外层引号，路径有空格时要再包一层
+        c.raw_arg(format!("/C \"\"{}\"\"", script.display()));
+        c
+    } else {
+        Command::new(script)
+    };
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn service_command(script: &Path) -> Command {
+    Command::new(script)
+}
+
+/// Perch 退出时调用：关掉自己启动的服务，连同它启动的子进程（脚本里的 python）
+pub fn stop_service() {
+    let Some(mut child) = SERVICE.lock().unwrap().take() else { return };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill").args(["/PID", &child.id().to_string(), "/T", "/F"]).creation_flags(0x0800_0000).output();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 // ---------- 解码和播放 ----------
@@ -409,6 +584,54 @@ mod tests {
         let md = "# 标题\n**好的**，看 [文档](https://x.y/z)：\n```rust\nfn main() {}\n```\n- 第一条\n> 引用";
         assert_eq!(plain_text(md), "标题\n好的，看 文档：\n（代码略）\n第一条\n引用");
         assert_eq!(plain_text("   "), "");
+    }
+
+    #[test]
+    fn local_request_uses_character_voice_or_reference_audio() {
+        let mut p = TtsParams::default();
+        assert!(local_body(&p, "你好", false).unwrap_err().contains("参考音频"));
+
+        p.local_ref_audio = Some("D:/ref.wav".into());
+        p.local_ref_text = Some("参考".into());
+        let b = local_body(&p, "你好", false).unwrap();
+        assert_eq!((b["refer_wav_path"].as_str(), b["prompt_text"].as_str()), (Some("D:/ref.wav"), Some("参考")));
+        assert_eq!(b["text_language"].as_str(), Some("zh"));
+        assert!(b.get("lora_id").is_none());
+
+        // 选了角色声音就不发参考音频
+        p.local_lora = Some("roselia_qwen3tts".into());
+        p.local_speaker = Some("yukina".into());
+        let b = local_body(&p, "こんにちは", true).unwrap();
+        assert_eq!(b["text_language"].as_str(), Some("ja"));
+        assert_eq!((b["lora_id"].as_str(), b["speaker"].as_str()), (Some("roselia_qwen3tts"), Some("yukina")));
+        assert!(b.get("refer_wav_path").is_none() && b.get("prompt_text").is_none());
+    }
+
+    #[test]
+    fn recognises_japanese_and_cleans_translation() {
+        assert!(has_kana("続けましょう") && has_kana("カタカナ"));
+        assert!(!has_kana("继续吧") && !has_kana("hello"));
+        assert_eq!(clean_translation(" 「続けましょう」\n"), "続けましょう");
+    }
+
+    #[test]
+    fn service_is_off_by_default_and_reports_missing_script() {
+        let p = TtsParams::default();
+        assert!(!p.local_autostart && p.local_start_script.is_none());
+        assert!(start_service(Path::new("D:/没有这个/start.bat")).unwrap_err().contains("找不到"));
+    }
+
+    #[test]
+    fn parses_voice_list() {
+        let v = serde_json::json!({ "active_lora_id": null, "loras": {
+            "roselia": { "speakers": ["yukina", "lisa"], "multi_speaker": true },
+            "solo": { "speakers": [], "multi_speaker": false },
+        }});
+        let voices = parse_voices(&v).unwrap();
+        assert_eq!(voices.len(), 3);
+        assert_eq!(voices[0], LocalVoice { lora: "roselia".into(), speaker: Some("yukina".into()) });
+        assert_eq!(voices[2], LocalVoice { lora: "solo".into(), speaker: None });
+        assert!(parse_voices(&serde_json::json!({ "code": 400 })).is_none());
     }
 
     #[test]

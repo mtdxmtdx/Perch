@@ -48,6 +48,11 @@ export interface TtsParams {
   local_ref_text: string | null;
   local_ref_lang: string;
   local_text_lang: string;
+  speak_japanese: boolean;
+  local_autostart: boolean;
+  local_start_script: string | null;
+  local_lora: string | null;
+  local_speaker: string | null;
 }
 
 export interface DialogPair {
@@ -279,6 +284,12 @@ export interface SettingsView {
 }
 
 /** 保存设置（和试听）时发给后端的内容 */
+/** 本地 TTS 服务里预置的角色声音 */
+export interface LocalVoice {
+  lora: string;
+  speaker: string | null;
+}
+
 export interface SettingsIn {
   providers: Provider[];
   roles: Roles;
@@ -371,6 +382,7 @@ export const api = {
   memorySave: (id: number | null, kind: string, content: string) => invoke<void>("memory_save", { id, kind, content }),
   memoryDelete: (id: number) => invoke<void>("memory_delete", { id }),
   /** 用还没保存的设置试听一句 */
+  ttsLocalVoices: (url: string) => invoke<LocalVoice[]>("tts_local_voices", { url }),
   ttsTest: (settings: SettingsIn, text: string) =>
     invoke<void>("tts_test", { settings, text }),
   skinImport: (path: string, apply = false) => invoke<SkinEntry>("skin_import", { path, apply }),
