@@ -110,7 +110,7 @@ fn today_count(store: &Store, today: &str) -> u32 {
 /// 检查生图模型是否配置、今天是否还有额度；返回今天已用张数
 pub fn check_quota(cfg: &Config, store: &Store) -> Result<u32, String> {
     Backend::from_config(cfg)?;
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = crate::clock::now().format("%Y-%m-%d").to_string();
     let used = today_count(store, &today);
     if used >= cfg.image.daily_limit {
         return Err(format!("今天已经画了 {used} 张，达到每日上限（{}），可以在设置里调整", cfg.image.daily_limit));
@@ -132,7 +132,7 @@ pub async fn generate(cfg: &Config, store: &Store, prompt: &str) -> Result<Gener
         return Err("画什么呢？/draw 后面写上描述".into());
     }
     let used = check_quota(cfg, store)?;
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = crate::clock::now().format("%Y-%m-%d").to_string();
     let backend = Backend::from_config(cfg)?;
     let bytes = backend.generate(prompt, &cfg.image.size).await?;
     store.set_state("image_count", &format!("{today}:{}", used + 1));
@@ -142,7 +142,7 @@ pub async fn generate(cfg: &Config, store: &Store, prompt: &str) -> Result<Gener
     let dir = pictures_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     // 同一秒内画多张时不能互相覆盖
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f").to_string();
+    let stamp = crate::clock::now().format("%Y%m%d-%H%M%S-%3f").to_string();
     let mut saved = dir.join(format!("{stamp}.{ext}"));
     let mut n = 1;
     while saved.exists() {

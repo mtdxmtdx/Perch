@@ -34,6 +34,7 @@ pub struct SettingsView {
     pub agents: AgentsParams,
     pub proactive: ProactiveParams,
     pub awareness: AwarenessParams,
+    pub timezone: Option<String>,
     /// 锁死名单（只读展示）
     pub capture_locked_processes: Vec<String>,
     pub capture_locked_title_keywords: Vec<String>,
@@ -59,6 +60,8 @@ pub struct SettingsIn {
     /// 老版本设置页不发：沿用原来的
     #[serde(default)]
     pub awareness: Option<AwarenessParams>,
+    #[serde(default)]
+    pub timezone: Option<String>,
     /// 老版本的设置页不发这个字段：沿用原来的
     #[serde(default)]
     pub tts: Option<TtsParams>,
@@ -87,6 +90,7 @@ pub fn settings_get(state: State<AppState>) -> SettingsView {
         agents: cfg.agents,
         proactive: cfg.proactive,
         awareness: cfg.awareness,
+        timezone: cfg.timezone,
         capture_locked_processes: crate::awareness::gate::LOCKED_PROCESSES.iter().map(|s| (*s).to_string()).collect(),
         capture_locked_title_keywords: crate::awareness::gate::LOCKED_TITLE_KEYWORDS.iter().map(|s| (*s).to_string()).collect(),
         tts: cfg.tts,
@@ -156,6 +160,8 @@ pub fn settings_save(app: AppHandle, state: State<AppState>, settings: SettingsI
         if let Some(a) = settings.awareness {
             cfg.awareness = a;
         }
+        cfg.timezone = settings.timezone.filter(|z| crate::clock::valid(z));
+        crate::clock::set(cfg.timezone.as_deref());
         if let Some(t) = settings.tts {
             cfg.tts = t;
         }

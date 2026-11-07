@@ -188,7 +188,7 @@ async fn report_out(app: &AppHandle, agent: Agent, cwd: &str, r: Report, p: &Age
     };
     crate::proactive::agent_signal(
         app,
-        crate::proactive::AgentSignal { agent: agent.display(), kind, project: project.clone(), at: chrono::Local::now() },
+        crate::proactive::AgentSignal { agent: agent.display(), kind, project: project.clone(), at: crate::clock::now() },
     );
     let where_ = if project.is_empty() { String::new() } else { format!("「{project}」的 ") };
     let (title, text) = match r {

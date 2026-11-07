@@ -2,6 +2,7 @@ pub mod agents;
 mod awareness;
 mod autostart;
 mod chat;
+mod clock;
 mod commands;
 mod config;
 mod files;
@@ -133,6 +134,7 @@ pub fn run() {
     // 改名前（table pet）的数据目录和 API Key 搬到新名字下
     config::migrate_legacy_dir();
     let cfg = config::load();
+    clock::set(cfg.timezone.as_deref());
     config::migrate_legacy_keys(&cfg.providers.iter().map(|p| p.id.clone()).collect::<Vec<_>>());
     let shared: SharedState = Arc::new(Mutex::new(Shared {
         work_mode: cfg.work_mode,

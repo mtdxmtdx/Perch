@@ -14,7 +14,7 @@
 
 use crate::config::ProactiveParams;
 use crate::AppState;
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, NaiveTime, Timelike};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, FixedOffset, NaiveDate, NaiveTime, Timelike};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter, Manager};
 /// 触发器判断时能看到的情况
 #[derive(Clone, Debug)]
 pub struct Context {
-    pub now: DateTime<Local>,
+    pub now: DateTime<FixedOffset>,
     /// 多久没有键盘、鼠标操作了（秒）
     pub user_idle_secs: u64,
     /// 距上次和桌宠说话多久了（秒）；从没聊过时为 None
@@ -133,7 +133,7 @@ pub struct AgentSignal {
     pub agent: &'static str,
     pub kind: AgentSignalKind,
     pub project: String,
-    pub at: DateTime<Local>,
+    pub at: DateTime<FixedOffset>,
 }
 
 /// 一种开口的理由
@@ -272,7 +272,7 @@ impl ProactiveTrigger for DailyAt {
 pub struct Sedentary {
     pub after_secs: u64,
     pub break_secs: u64,
-    active_since: Option<DateTime<Local>>,
+    active_since: Option<DateTime<FixedOffset>>,
 }
 
 impl Sedentary {
@@ -319,7 +319,7 @@ pub struct Bedtime {
     pub every: ChronoDuration,
     night: Option<NaiveDate>,
     count: u32,
-    last: Option<DateTime<Local>>,
+    last: Option<DateTime<FixedOffset>>,
 }
 
 impl Bedtime {
@@ -418,8 +418,8 @@ impl ProactiveTrigger for AgentFollowUp {
 /// 专注写代码（或者 agent 在干活）很久了：说句鼓励的话。离开专注状态超过 10 分钟就重新计时
 pub struct Encourage {
     pub after_secs: u64,
-    start: Option<DateTime<Local>>,
-    last_focus: Option<DateTime<Local>>,
+    start: Option<DateTime<FixedOffset>>,
+    last_focus: Option<DateTime<FixedOffset>>,
 }
 
 impl Encourage {
@@ -474,8 +474,8 @@ pub struct WelcomeBack {
     /// 正在离开：已经离开了多少秒
     away: Option<u64>,
     /// 刚回来：离开了多少秒、什么时候回来的
-    back: Option<(u64, DateTime<Local>)>,
-    last_tick: Option<DateTime<Local>>,
+    back: Option<(u64, DateTime<FixedOffset>)>,
+    last_tick: Option<DateTime<FixedOffset>>,
     /// 哪天问过早安了
     greeted: Option<NaiveDate>,
 }
@@ -931,7 +931,7 @@ pub fn context(app: &AppHandle, p: &ProactiveParams) -> Context {
         (s.pet_hidden, s.user_hidden, s.work_mode, s.bubble_visible, s.fullscreen)
     };
     let busy = bubble || crate::chat::is_busy(app) || crate::voice::is_recording(app);
-    let now = Local::now();
+    let now = crate::clock::now();
     let since_last_chat_secs = state.store.last_user_message_at().map(|t| (now.timestamp() - t).max(0) as u64);
     use crate::agents::model::Status;
     let sessions = crate::agents::sessions(app);
@@ -1005,7 +1005,7 @@ pub fn sound_state(app: &AppHandle) -> (bool, bool) {
         (false, false)
     };
     let (mode, _) = desktop_mode(&p, fullscreen, fg.as_deref(), agents_busy, in_call, watching);
-    (mode == DesktopMode::Silent, work_mode || in_quiet_hours(&p, Local::now().time()))
+    (mode == DesktopMode::Silent, work_mode || in_quiet_hours(&p, crate::clock::now().time()))
 }
 
 /// agent 汇报时调用：转给各触发器（关着时什么都不做）
@@ -1192,7 +1192,7 @@ async fn prepare_screen_glance(
 
     {
         let mut st = GLANCE_STATE.lock().unwrap();
-        let today = Local::now().format("%Y-%m-%d").to_string();
+        let today = crate::clock::now().format("%Y-%m-%d").to_string();
         if st.day != today {
             st.day = today;
             st.glances_today = 0;
@@ -1402,11 +1402,15 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn at(h: u32, m: u32) -> DateTime<Local> {
-        Local.with_ymd_and_hms(2026, 10, 25, h, m, 0).unwrap()
+    fn tz() -> FixedOffset {
+        FixedOffset::east_opt(8 * 3600).unwrap()
     }
 
-    fn ctx_at(now: DateTime<Local>, idle: u64, since_chat: Option<u64>) -> Context {
+    fn at(h: u32, m: u32) -> DateTime<FixedOffset> {
+        tz().with_ymd_and_hms(2026, 10, 25, h, m, 0).unwrap()
+    }
+
+    fn ctx_at(now: DateTime<FixedOffset>, idle: u64, since_chat: Option<u64>) -> Context {
         Context {
             now,
             user_idle_secs: idle,
@@ -1494,15 +1498,15 @@ mod tests {
         assert!(t.poll(&ctx(23, 31, 600, None)).is_none()); // 人不在电脑前
         assert!(t.poll(&ctx(23, 32, 0, None)).is_some()); // 第 1 次
         assert!(t.poll(&ctx(23, 50, 0, None)).is_none()); // 不到 30 分钟
-        let next = Local.with_ymd_and_hms(2026, 10, 26, 0, 5, 0).unwrap();
+        let next = tz().with_ymd_and_hms(2026, 10, 26, 0, 5, 0).unwrap();
         assert!(t.poll(&ctx_at(next, 0, None)).is_some()); // 过了午夜还是同一晚，第 2 次
-        let n3 = Local.with_ymd_and_hms(2026, 10, 26, 0, 40, 0).unwrap();
+        let n3 = tz().with_ymd_and_hms(2026, 10, 26, 0, 40, 0).unwrap();
         assert!(t.poll(&ctx_at(n3, 0, None)).is_some()); // 第 3 次
-        let n4 = Local.with_ymd_and_hms(2026, 10, 26, 1, 20, 0).unwrap();
+        let n4 = tz().with_ymd_and_hms(2026, 10, 26, 1, 20, 0).unwrap();
         assert!(t.poll(&ctx_at(n4, 0, None)).is_none()); // 一晚最多 3 次
-        let morning = Local.with_ymd_and_hms(2026, 10, 26, 6, 0, 0).unwrap();
+        let morning = tz().with_ymd_and_hms(2026, 10, 26, 6, 0, 0).unwrap();
         assert!(t.poll(&ctx_at(morning, 0, None)).is_none()); // 早上不催
-        let tomorrow = Local.with_ymd_and_hms(2026, 10, 26, 23, 40, 0).unwrap();
+        let tomorrow = tz().with_ymd_and_hms(2026, 10, 26, 23, 40, 0).unwrap();
         assert!(t.poll(&ctx_at(tomorrow, 0, None)).is_some()); // 第二天晚上重新计数
     }
 

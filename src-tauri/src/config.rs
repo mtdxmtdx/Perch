@@ -15,6 +15,8 @@ pub struct Config {
     pub scale: f64,
     pub work_mode: bool,
     pub hide_on_fullscreen: bool,
+    /// 时区名（比如 Asia/Tokyo）；为空跟随系统（见 clock.rs）
+    pub timezone: Option<String>,
     pub providers: Vec<Provider>,
     pub roles: Roles,
     pub personas: Vec<Persona>,
@@ -482,6 +484,7 @@ impl Default for Config {
             scale: 0.75,
             work_mode: false,
             hide_on_fullscreen: true,
+            timezone: None,
             providers: Vec::new(),
             roles: Roles::default(),
             personas: vec![Persona::default()],
