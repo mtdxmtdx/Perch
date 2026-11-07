@@ -715,6 +715,20 @@ function VoiceTab({ draft, update }: TabProps) {
 }
 
 /** 语音输出（朗读）：默认不读，选了引擎才读 */
+/** 朗读语言：代码发给语音服务，要和服务支持的对上 */
+const SPEAK_LANGUAGES: [string, string][] = [
+  ["zh", "中文"],
+  ["ja", "日语"],
+  ["en", "英语"],
+  ["ko", "韩语"],
+  ["fr", "法语"],
+  ["de", "德语"],
+  ["es", "西班牙语"],
+  ["it", "意大利语"],
+  ["pt", "葡萄牙语"],
+  ["ru", "俄语"],
+];
+
 function TtsSection({ draft, update }: TabProps) {
   const t = draft.tts;
   const set = (patch: Partial<TtsParams>) => update((d) => ({ ...d, tts: { ...d.tts, ...patch } }));
@@ -887,14 +901,17 @@ function TtsSection({ draft, update }: TabProps) {
               {num(t.volume, 0, 2, 0.1, (v) => set({ volume: v }))}
             </div>
             <label>
-              用日语说
-              <div className="small muted">读之前用辅助模型翻译成日语，气泡和聊天记录里的文字不变。每句多等一两秒；翻译失败就读原文</div>
+              朗读语言
+              <div className="small muted">读之前用辅助模型翻译成这种语言，气泡和聊天记录里的文字不变。每句多等一两秒；翻译失败就读原文。声音模型要支持这种语言</div>
             </label>
-            <div className="checks">
-              <label>
-                <input type="checkbox" checked={t.speak_japanese} onChange={(e) => set({ speak_japanese: e.target.checked })} /> 翻译成日语再读
-              </label>
-            </div>
+            <select value={t.speak_language ?? ""} onChange={(e) => set({ speak_language: e.target.value || null })}>
+              <option value="">和文字相同（不翻译）</option>
+              {SPEAK_LANGUAGES.map(([code, name]) => (
+                <option key={code} value={code}>
+                  {name}
+                </option>
+              ))}
+            </select>
             <label>读什么</label>
             <div className="checks" style={{ flexDirection: "column", alignItems: "flex-start" }}>
               <label>

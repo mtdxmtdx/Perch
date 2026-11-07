@@ -91,8 +91,8 @@ pub struct TtsParams {
     pub local_ref_lang: String,
     /// 要读的文字的语言
     pub local_text_lang: String,
-    /// 用日语说：朗读前翻译成日语，显示的文字不变
-    pub speak_japanese: bool,
+    /// 朗读语言（zh、ja、en……）：朗读前翻译成这种语言，显示的文字不变；为空读原文
+    pub speak_language: Option<String>,
     /// Perch 启动时运行本地服务的启动脚本，退出时关掉它
     pub local_autostart: bool,
     /// 启动脚本（.bat、.cmd 或 .exe）
@@ -119,7 +119,7 @@ impl Default for TtsParams {
             local_ref_text: None,
             local_ref_lang: "zh".into(),
             local_text_lang: "zh".into(),
-            speak_japanese: false,
+            speak_language: None,
             local_autostart: false,
             local_start_script: None,
             local_lora: None,
@@ -653,6 +653,23 @@ mod awareness_serde_tests {
 
     /// 老配置缺少 M2/M3 字段时，serde(default) 填入安全默认（全关、标题不上传）
     #[test]
+    fn old_japanese_switch_becomes_speak_language() {
+        let mut c = Config::default();
+        migrate_speak_language(&mut c, Some(&serde_json::json!({ "tts": { "speak_japanese": true } })));
+        assert_eq!(c.tts.speak_language.as_deref(), Some("ja"));
+
+        let mut c = Config::default();
+        migrate_speak_language(&mut c, Some(&serde_json::json!({ "tts": { "speak_japanese": false } })));
+        assert!(c.tts.speak_language.is_none());
+
+        // 已经选过语言的不动
+        let mut c = Config::default();
+        c.tts.speak_language = Some("en".into());
+        migrate_speak_language(&mut c, Some(&serde_json::json!({ "tts": { "speak_japanese": true } })));
+        assert_eq!(c.tts.speak_language.as_deref(), Some("en"));
+    }
+
+    #[test]
     fn awareness_missing_fields_get_safe_defaults() {
         let v: AwarenessParams = serde_json::from_str("{}").unwrap();
         assert!(!v.vision_tool);
@@ -695,9 +712,18 @@ fn config_path() -> PathBuf {
     data_dir().join("config.json")
 }
 
+/// v0.5.0 只有「用日语说」开关，后来换成了朗读语言
+fn migrate_speak_language(cfg: &mut Config, raw: Option<&serde_json::Value>) {
+    let old = raw.and_then(|v| v.pointer("/tts/speak_japanese")).and_then(serde_json::Value::as_bool);
+    if old == Some(true) && cfg.tts.speak_language.is_none() {
+        cfg.tts.speak_language = Some("ja".into());
+    }
+}
+
 pub fn load() -> Config {
     let raw: Option<serde_json::Value> = std::fs::read_to_string(config_path()).ok().and_then(|s| serde_json::from_str(&s).ok());
     let mut cfg: Config = raw.clone().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    migrate_speak_language(&mut cfg, raw.as_ref());
     // 语音输入开关是后来加的：老配置里没有这一项时，模型和运行库都在就保持开启，否则关闭
     if raw.as_ref().is_some_and(|v| v.pointer("/voice/enabled").is_none()) {
         cfg.voice.enabled = crate::voice::models::locate(cfg.voice.model_dir.as_deref()).is_ok()
