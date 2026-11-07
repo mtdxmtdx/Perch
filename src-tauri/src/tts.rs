@@ -18,10 +18,10 @@ use crate::llm::{self, ChatMessage, Endpoint};
 use crate::AppState;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// 读的是什么（设置里可以分开开关）
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +66,17 @@ fn sound_allowed(app: &AppHandle, p: &TtsParams) -> bool {
 /// 每次开始读或打断时加一；播放中发现它变了就停
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// 正在处理的朗读数（翻译、合成、播放都算）。新的一句打断旧的时会短暂有两个
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// 告诉气泡有没有在读：读完之前别收起。从第一句开始、到最后一句结束各发一次
+fn set_active(app: &AppHandle, on: bool) {
+    let changed = if on { ACTIVE.fetch_add(1, Ordering::SeqCst) == 0 } else { ACTIVE.fetch_sub(1, Ordering::SeqCst) == 1 };
+    if changed {
+        let _ = app.emit_to(crate::windows::BUBBLE, "tts-speaking", on);
+    }
+}
+
 /// 按设置读一段文字（不读就什么都不做）。在后台读，不阻塞调用方
 pub fn speak(app: &AppHandle, text: &str, what: What) {
     let cfg = app.state::<AppState>().config.lock().unwrap().clone();
@@ -82,10 +93,12 @@ pub fn speak(app: &AppHandle, text: &str, what: What) {
     }
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let app = app.clone();
+    set_active(&app, true);
     tauri::async_runtime::spawn(async move {
         if let Err(e) = synth_and_play(&app, &cfg, &text, generation, false).await {
             eprintln!("[tts] 朗读失败：{e}");
         }
+        set_active(&app, false);
     });
 }
 
