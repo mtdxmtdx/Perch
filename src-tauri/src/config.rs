@@ -433,6 +433,56 @@ pub struct Persona {
     pub temperature: Option<f64>,
     /// 绑定的皮肤目录；切换到这个人格时自动换皮肤
     pub skin: Option<String>,
+    /// 这个人格自己的声音，没填的项跟随「语音」里的设置
+    pub voice: PersonaVoice,
+}
+
+/// 人格自己的声音。每一项都是可选的：填了就覆盖「语音」页的设置，没填就跟随
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PersonaVoice {
+    /// 云端音色
+    pub voice: Option<String>,
+    /// 本地服务里的角色声音
+    pub local_lora: Option<String>,
+    pub local_speaker: Option<String>,
+    /// 本地服务的参考音频（选了就不用角色声音）
+    pub local_ref_audio: Option<String>,
+    pub local_ref_text: Option<String>,
+    pub local_ref_lang: Option<String>,
+    /// 朗读语言：不填跟随；填空字符串表示不翻译
+    pub speak_language: Option<String>,
+}
+
+fn filled(s: &Option<String>) -> Option<String> {
+    s.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
+}
+
+impl TtsParams {
+    /// 套上人格自己的声音
+    pub fn for_persona(&self, v: &PersonaVoice) -> TtsParams {
+        let mut t = self.clone();
+        if let Some(voice) = filled(&v.voice) {
+            t.voice = Some(voice);
+        }
+        if let Some(audio) = filled(&v.local_ref_audio) {
+            // 人格用参考音频：不用全局的角色声音
+            t.local_lora = None;
+            t.local_speaker = None;
+            t.local_ref_audio = Some(audio);
+            t.local_ref_text = filled(&v.local_ref_text);
+            if let Some(lang) = filled(&v.local_ref_lang) {
+                t.local_ref_lang = lang;
+            }
+        } else if let Some(lora) = filled(&v.local_lora) {
+            t.local_lora = Some(lora);
+            t.local_speaker = filled(&v.local_speaker);
+        }
+        if let Some(lang) = &v.speak_language {
+            t.speak_language = filled(&Some(lang.clone()));
+        }
+        t
+    }
 }
 
 impl Default for Persona {
@@ -445,6 +495,7 @@ impl Default for Persona {
             provider: None,
             temperature: None,
             skin: None,
+            voice: PersonaVoice::default(),
         }
     }
 }

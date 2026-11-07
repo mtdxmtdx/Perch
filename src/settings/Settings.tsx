@@ -19,6 +19,9 @@ import {
   type ProactiveParams,
   type AwarenessParams,
   type LocalVoice,
+  type SettingsIn,
+  type PersonaVoice,
+  EMPTY_VOICE,
   type UpdateCheck,
   type VisionProcessRule,
   type AgentsOverview,
@@ -373,7 +376,7 @@ function PersonasTab({ draft, update, skins, onSkinImported }: TabProps & { skin
   };
 
   const add = () => {
-    const np: Persona = { id: newId(), name: "新人格", system_prompt: "", begin_dialogs: [], provider: null, temperature: null, skin: null };
+    const np: Persona = { id: newId(), name: "新人格", system_prompt: "", begin_dialogs: [], provider: null, temperature: null, skin: null, voice: { ...EMPTY_VOICE } };
     update((d) => ({ ...d, personas: [...d.personas, np] }));
     setSel(np.id);
   };
@@ -432,6 +435,7 @@ function PersonasTab({ draft, update, skins, onSkinImported }: TabProps & { skin
             {importMsg && <div className={importMsg.ok ? "small muted" : "error"}>{importMsg.text}</div>}
           </div>
         </div>
+        <PersonaVoiceSection key={p.id} draft={draft} persona={p} onChange={(voice) => set({ voice })} />
         <label>系统提示词（人设）</label>
         <textarea rows={8} value={p.system_prompt} onChange={(e) => set({ system_prompt: e.target.value })} />
         <div className="section-head">
@@ -715,7 +719,6 @@ function VoiceTab({ draft, update }: TabProps) {
   );
 }
 
-/** 语音输出（朗读）：默认不读，选了引擎才读 */
 /** 朗读语言：代码发给语音服务，要和服务支持的对上 */
 const SPEAK_LANGUAGES: [string, string][] = [
   ["zh", "中文"],
@@ -730,13 +733,166 @@ const SPEAK_LANGUAGES: [string, string][] = [
   ["ru", "俄语"],
 ];
 
+/** 本地服务里的角色声音：选择框加「读取列表」按钮 */
+function LocalVoicePicker({
+  url,
+  lora,
+  speaker,
+  emptyLabel,
+  onChange,
+}: {
+  url: string;
+  lora: string | null;
+  speaker: string | null;
+  emptyLabel: string;
+  onChange: (lora: string | null, speaker: string | null) => void;
+}) {
+  const [list, setList] = useState<LocalVoice[]>([]);
+  const [msg, setMsg] = useState<string | null>(null);
+  const load = async () => {
+    setMsg("读取中…");
+    try {
+      const v = await api.ttsLocalVoices(url);
+      setList(v);
+      setMsg(v.length ? `找到 ${v.length} 个角色声音` : "这个服务没有角色声音，请用参考音频");
+    } catch (e) {
+      setMsg(errorText(e));
+    }
+  };
+  const key = (l: string | null, s: string | null) => (l ? `${l}|${s ?? ""}` : "");
+  const name = (v: LocalVoice) => `${v.lora.replace(/_qwen3tts$/, "")}${v.speaker ? ` / ${v.speaker}` : ""}`;
+  const current = key(lora, speaker);
+  return (
+    <div>
+      <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto" }}>
+        <select
+          value={current}
+          onChange={(e) => {
+            const [l, s] = e.target.value.split("|");
+            onChange(l || null, s || null);
+          }}
+        >
+          <option value="">{emptyLabel}</option>
+          {lora && !list.some((v) => key(v.lora, v.speaker) === current) && <option value={current}>{name({ lora, speaker })}</option>}
+          {list.map((v) => (
+            <option key={key(v.lora, v.speaker)} value={key(v.lora, v.speaker)}>
+              {name(v)}
+            </option>
+          ))}
+        </select>
+        <button onClick={() => void load()}>读取列表</button>
+      </div>
+      {msg && <div className="small muted">{msg}</div>}
+    </div>
+  );
+}
+
+/** 人格自己的声音：没填的跟随「语音」页 */
+function PersonaVoiceSection({ draft, persona, onChange }: { draft: SettingsIn; persona: Persona; onChange: (v: PersonaVoice) => void }) {
+  const t = draft.tts;
+  const v = persona.voice ?? EMPTY_VOICE;
+  const set = (patch: Partial<PersonaVoice>) => onChange({ ...v, ...patch });
+  const [sample, setSample] = useState("你好呀，今天也一起加油吧！");
+  const [test, setTest] = useState<{ ok: boolean; text: string } | "running" | null>(null);
+  const pickRef = async () => {
+    const f = await openDialog({ title: "选择参考音频", filters: [{ name: "音频", extensions: ["wav", "mp3", "flac", "ogg", "m4a"] }] });
+    if (typeof f === "string") set({ local_ref_audio: f, local_lora: null, local_speaker: null });
+  };
+  const runTest = async () => {
+    setTest("running");
+    try {
+      await api.ttsTest(draft, sample, persona.id);
+      setTest({ ok: true, text: "读完了" });
+    } catch (e) {
+      setTest({ ok: false, text: errorText(e) });
+    }
+  };
+  const lang = v.speak_language === null ? "follow" : v.speak_language;
+  const globalLang = SPEAK_LANGUAGES.find(([c]) => c === t.speak_language)?.[1] ?? "不翻译";
+
+  return (
+    <>
+      <div className="section-head">
+        <label>声音</label>
+      </div>
+      {t.provider === "none" ? (
+        <p className="muted small">先在「语音」页选一个朗读引擎，再给人格设自己的声音。</p>
+      ) : (
+        <>
+          <p className="muted small">没填的跟随「语音」页的设置。保存后生效。</p>
+          <div className="grid2">
+            {t.provider === "cloud" && (
+              <>
+                <label>音色</label>
+                <input value={v.voice ?? ""} placeholder={t.voice ? `跟随：${t.voice}` : "跟随「语音」页"} onChange={(e) => set({ voice: e.target.value || null })} />
+              </>
+            )}
+            {t.provider === "local" && (
+              <>
+                <label>角色声音</label>
+                <LocalVoicePicker
+                  url={t.local_url}
+                  lora={v.local_lora}
+                  speaker={v.local_speaker}
+                  emptyLabel={v.local_ref_audio ? "不用（用下面的参考音频）" : "跟随「语音」页"}
+                  onChange={(lora, speaker) => set({ local_lora: lora, local_speaker: speaker, ...(lora ? { local_ref_audio: null, local_ref_text: null, local_ref_lang: null } : {}) })}
+                />
+                {!v.local_lora && (
+                  <>
+                    <label>
+                      参考音频
+                      <div className="small muted">选了就用它，不用角色声音</div>
+                    </label>
+                    <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto" }}>
+                      <input value={v.local_ref_audio ?? ""} placeholder="跟随「语音」页" onChange={(e) => set({ local_ref_audio: e.target.value || null })} />
+                      <button onClick={() => void pickRef()}>选择…</button>
+                    </div>
+                    {v.local_ref_audio && (
+                      <>
+                        <label>参考音频的文字 / 语言</label>
+                        <div className="reasoning-row" style={{ gridTemplateColumns: "1fr 6em" }}>
+                          <input value={v.local_ref_text ?? ""} placeholder="可选" onChange={(e) => set({ local_ref_text: e.target.value || null })} />
+                          <input list="tts-langs" value={v.local_ref_lang ?? ""} placeholder={t.local_ref_lang} onChange={(e) => set({ local_ref_lang: e.target.value || null })} />
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+            <label>朗读语言</label>
+            <select value={lang} onChange={(e) => set({ speak_language: e.target.value === "follow" ? null : e.target.value })}>
+              <option value="follow">跟随「语音」页（{globalLang}）</option>
+              <option value="">和文字相同（不翻译）</option>
+              {SPEAK_LANGUAGES.map(([code, name]) => (
+                <option key={code} value={code}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <label>试听</label>
+            <div>
+              <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto" }}>
+                <input value={sample} onChange={(e) => setSample(e.target.value)} />
+                <button disabled={test === "running"} onClick={() => void runTest()}>
+                  {test === "running" ? "合成中…" : "试听"}
+                </button>
+              </div>
+              {test && test !== "running" && <div className={test.ok ? "small muted" : "error"}>{test.text}</div>}
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+/** 语音输出（朗读）：默认不读，选了引擎才读 */
 function TtsSection({ draft, update }: TabProps) {
   const t = draft.tts;
   const set = (patch: Partial<TtsParams>) => update((d) => ({ ...d, tts: { ...d.tts, ...patch } }));
   const [sample, setSample] = useState("你好呀，我是你的桌面小伙伴，今天也一起加油吧！");
   const [test, setTest] = useState<{ ok: boolean; text: string } | "running" | null>(null);
-  const [localVoices, setLocalVoices] = useState<LocalVoice[]>([]);
-  const [voicesMsg, setVoicesMsg] = useState<string | null>(null);
   const cloudModel = draft.providers.find((p) => p.id === draft.roles.tts);
   const voices = TTS_VOICES.find(([prefix]) => cloudModel?.model.startsWith(prefix))?.[1] ?? [];
 
@@ -748,19 +904,6 @@ function TtsSection({ draft, update }: TabProps) {
     const f = await openDialog({ title: "选择启动脚本", filters: [{ name: "脚本或程序", extensions: ["bat", "cmd", "exe"] }] });
     if (typeof f === "string") set({ local_start_script: f });
   };
-  const loadVoices = async () => {
-    setVoicesMsg("读取中…");
-    try {
-      const v = await api.ttsLocalVoices(t.local_url);
-      setLocalVoices(v);
-      setVoicesMsg(v.length ? `找到 ${v.length} 个角色声音` : "这个服务没有角色声音，请用参考音频");
-    } catch (e) {
-      setVoicesMsg(errorText(e));
-    }
-  };
-  const voiceKey = (lora: string | null, speaker: string | null) => (lora ? `${lora}|${speaker ?? ""}` : "");
-  const voiceName = (v: LocalVoice) => `${v.lora.replace(/_qwen3tts$/, "")}${v.speaker ? ` / ${v.speaker}` : ""}`;
-  const currentVoice = voiceKey(t.local_lora, t.local_speaker);
   const runTest = async () => {
     setTest("running");
     try {
@@ -779,6 +922,7 @@ function TtsSection({ draft, update }: TabProps) {
       <h3>语音输出（朗读）</h3>
       <p className="muted small">
         默认不读。选一个朗读引擎后，桌宠会把主动说的话和对话回复的开头读出来。全屏、开会、直播时不出声；要读的文字会发给你选的服务。
+        长的话按句子逐句合成，第一句好了就开始读。每个人格可以在「人格」页设自己的声音，这里是默认的。
       </p>
       <div className="grid2 params">
         <label>朗读引擎</label>
@@ -836,28 +980,15 @@ function TtsSection({ draft, update }: TabProps) {
             </div>
             <label>
               角色声音
-              <div className="small muted">服务里预置的声音（比如 Qwen3TTS 的 LoRA），选了就不用参考音频。{voicesMsg}</div>
+              <div className="small muted">服务里预置的声音（比如 Qwen3TTS 的 LoRA），选了就不用参考音频</div>
             </label>
-            <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto" }}>
-              <select
-                value={currentVoice}
-                onChange={(e) => {
-                  const [lora, speaker] = e.target.value.split("|");
-                  set({ local_lora: lora || null, local_speaker: speaker || null });
-                }}
-              >
-                <option value="">不用（用参考音频）</option>
-                {t.local_lora && !localVoices.some((v) => voiceKey(v.lora, v.speaker) === currentVoice) && (
-                  <option value={currentVoice}>{voiceName({ lora: t.local_lora, speaker: t.local_speaker })}</option>
-                )}
-                {localVoices.map((v) => (
-                  <option key={voiceKey(v.lora, v.speaker)} value={voiceKey(v.lora, v.speaker)}>
-                    {voiceName(v)}
-                  </option>
-                ))}
-              </select>
-              <button onClick={() => void loadVoices()}>读取列表</button>
-            </div>
+            <LocalVoicePicker
+              url={t.local_url}
+              lora={t.local_lora}
+              speaker={t.local_speaker}
+              emptyLabel="不用（用参考音频）"
+              onChange={(lora, speaker) => set({ local_lora: lora, local_speaker: speaker })}
+            />
             {!t.local_lora && (
               <>
             <label>

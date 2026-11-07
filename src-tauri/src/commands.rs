@@ -337,14 +337,15 @@ pub async fn skin_import(app: AppHandle, path: String, apply: Option<bool>) -> R
 
 /// 设置页的"试听"：用还没保存的朗读设置读一句
 #[tauri::command]
-pub async fn tts_test(app: AppHandle, state: State<'_, AppState>, settings: SettingsIn, text: String) -> Result<(), String> {
+pub async fn tts_test(app: AppHandle, state: State<'_, AppState>, settings: SettingsIn, text: String, persona: Option<String>) -> Result<(), String> {
     let mut cfg = state.config.lock().unwrap().clone();
     if let Some(t) = settings.tts {
         cfg.tts = t;
     }
     cfg.roles = settings.roles;
     cfg.providers = settings.providers;
-    crate::tts::test(&app, cfg, &text).await
+    cfg.personas = settings.personas;
+    crate::tts::test(&app, cfg, &text, persona.as_deref()).await
 }
 
 /// 问本地 TTS 服务有哪些角色声音

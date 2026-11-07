@@ -12,6 +12,9 @@
 //!
 //! 什么时候不出声：桌宠隐藏、全屏 / 开会 / 直播（静默状态）时不读；工作模式和免打扰时段默认也不读。
 //! 开始录音、发新消息、读下一句时打断正在读的。
+//!
+//! 每个人格可以有自己的声音（`PersonaVoice`），没填的项跟随全局设置。
+//! 长的话按句子切开逐句合成：第一句合成好就开始读，读的同时合成下一句，接在同一条播放流后面。
 
 use crate::config::{Config, TtsParams};
 use crate::llm::{self, ChatMessage, Endpoint};
@@ -79,7 +82,8 @@ fn set_active(app: &AppHandle, on: bool) {
 
 /// 按设置读一段文字（不读就什么都不做）。在后台读，不阻塞调用方
 pub fn speak(app: &AppHandle, text: &str, what: What) {
-    let cfg = app.state::<AppState>().config.lock().unwrap().clone();
+    let mut cfg = app.state::<AppState>().config.lock().unwrap().clone();
+    cfg.tts = cfg.tts.for_persona(&cfg.active_persona().voice);
     let p = &cfg.tts;
     if !wants(p, what) || !sound_allowed(app, p) {
         return;
@@ -102,8 +106,13 @@ pub fn speak(app: &AppHandle, text: &str, what: What) {
     });
 }
 
-/// 设置页的"试听"：不管开关和当前状态，用传进来的设置读一句，出错返回原因
-pub async fn test(app: &AppHandle, cfg: Config, text: &str) -> Result<(), String> {
+/// 设置页的"试听"：不管开关和当前状态，用传进来的设置读一句，出错返回原因。
+/// 给了人格就用这个人格的声音
+pub async fn test(app: &AppHandle, mut cfg: Config, text: &str, persona: Option<&str>) -> Result<(), String> {
+    if let Some(p) = persona.and_then(|id| cfg.personas.iter().find(|p| p.id == id)) {
+        cfg.tts = cfg.tts.for_persona(&p.voice);
+        cfg.active_persona = p.id.clone();
+    }
     let text = plain_text(text);
     if text.is_empty() {
         return Err("写一句要试听的话".into());
@@ -134,22 +143,50 @@ async fn synth_and_play(app: &AppHandle, cfg: &Config, text: &str, generation: u
         return Ok(()); // 翻译期间被打断或者有新的要读
     }
     let lang = translated.as_ref().and(speak_language(cfg));
-    let wav = synthesize(cfg, translated.as_deref().unwrap_or(text), lang).await?;
-    if GENERATION.load(Ordering::SeqCst) != generation {
-        return Ok(()); // 合成期间被打断或者有新的要读
-    }
-    let (samples, rate) = decode_wav(&wav)?;
-    if samples.is_empty() {
-        return Ok(());
-    }
-    // 读的时候桌宠播放说话动画
-    let secs = samples.len() as f64 / rate as f64;
-    crate::chat::set_speech(app, Some("talk"), Some(Instant::now() + Duration::from_secs_f64(secs + 0.2)));
+    let pieces = sentences(translated.as_deref().unwrap_or(text), SENTENCE_MIN, SENTENCE_MAX);
+    let interrupted = || GENERATION.load(Ordering::SeqCst) != generation;
+
+    // 播放线程先开着，合成好一句就送过去一句；读这一句的同时合成下一句
+    let (tx, rx) = std::sync::mpsc::channel::<(Vec<f32>, u32)>();
     let volume = cfg.tts.volume.clamp(0.0, 2.0) as f32;
-    tauri::async_runtime::spawn_blocking(move || play(&samples, rate, volume, generation))
-        .await
-        .map_err(|e| e.to_string())?
+    let player = tauri::async_runtime::spawn_blocking(move || play(rx, volume, generation));
+    let mut result = Ok(());
+    // 说话动画放到已排队的音频读完为止
+    let mut talk_until = Instant::now();
+    for (i, piece) in pieces.iter().enumerate() {
+        if interrupted() {
+            break;
+        }
+        let audio = match synthesize(cfg, piece, lang).await.and_then(|wav| decode_wav(&wav)) {
+            Ok(a) => a,
+            Err(e) => {
+                // 后面的句子失败时已经读了一部分，只记下来
+                if i == 0 {
+                    result = Err(e);
+                } else {
+                    eprintln!("[tts] 第 {} 句合成失败，后面的不读了：{e}", i + 1);
+                }
+                break;
+            }
+        };
+        if interrupted() || audio.0.is_empty() {
+            continue;
+        }
+        let secs = audio.0.len() as f64 / audio.1 as f64;
+        talk_until = talk_until.max(Instant::now()) + Duration::from_secs_f64(secs);
+        crate::chat::set_speech(app, Some("talk"), Some(talk_until + Duration::from_millis(200)));
+        if tx.send(audio).is_err() {
+            break; // 播放线程已经退出（打不开扬声器或被打断）
+        }
+    }
+    drop(tx);
+    let played = player.await.map_err(|e| e.to_string())?;
+    result.and(played)
 }
+
+/// 分句：太短的句子并到下一句（合成太碎会断断续续），太长的在逗号处切开
+const SENTENCE_MIN: usize = 8;
+const SENTENCE_MAX: usize = 80;
 
 // ---------- 朗读语言 ----------
 
@@ -481,38 +518,47 @@ pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
         .collect()
 }
 
-/// 用默认扬声器播放，读完或被打断（GENERATION 变了）才返回
-fn play(samples: &[f32], rate: u32, volume: f32, generation: u64) -> Result<(), String> {
+/// 用默认扬声器播放从 rx 收到的一段段音频（单声道样本，采样率），前后接成一条流。
+/// rx 关闭且都读完、或者被打断（GENERATION 变了）才返回
+fn play(rx: std::sync::mpsc::Receiver<(Vec<f32>, u32)>, volume: f32, generation: u64) -> Result<(), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::SampleFormat;
-    use std::sync::atomic::AtomicUsize;
+    use std::collections::VecDeque;
+    use std::sync::mpsc::RecvTimeoutError;
     use std::sync::Arc;
 
+    let interrupted = || GENERATION.load(Ordering::SeqCst) != generation;
+    // 第一句还没合成好时不占用扬声器
+    let first = loop {
+        match rx.recv_timeout(Duration::from_millis(30)) {
+            Ok(a) => break a,
+            Err(RecvTimeoutError::Timeout) if !interrupted() => continue,
+            _ => return Ok(()),
+        }
+    };
     let host = cpal::default_host();
     let dev = host.default_output_device().ok_or("没有找到扬声器")?;
     let supported = dev.default_output_config().map_err(|e| format!("读取扬声器格式失败：{e}"))?;
     let out_rate = supported.sample_rate();
     let channels = supported.channels() as usize;
-    let data: Arc<Vec<f32>> = Arc::new(resample(samples, rate, out_rate).into_iter().map(|s| (s * volume).clamp(-1.0, 1.0)).collect());
-    let pos = Arc::new(AtomicUsize::new(0));
+    let prepare = |(samples, rate): (Vec<f32>, u32)| -> Vec<f32> { resample(&samples, rate, out_rate).into_iter().map(|s| (s * volume).clamp(-1.0, 1.0)).collect() };
+    let queue: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(prepare(first).into()));
     let config = supported.config();
     let err_fn = |e| eprintln!("[tts] 播放出错：{e}");
 
     macro_rules! build {
         ($t:ty, $conv:expr) => {{
-            let (d, p) = (data.clone(), pos.clone());
+            let q = queue.clone();
             dev.build_output_stream::<$t, _, _>(
                 config.clone(),
                 move |out: &mut [$t], _| {
-                    let mut i = p.load(Ordering::Relaxed);
+                    let mut q = q.lock().unwrap();
                     for frame in out.chunks_mut(channels.max(1)) {
-                        let v = d.get(i).copied().unwrap_or(0.0);
-                        i += 1;
+                        let v = q.pop_front().unwrap_or(0.0);
                         for s in frame.iter_mut() {
                             *s = $conv(v);
                         }
                     }
-                    p.store(i, Ordering::Relaxed);
                 },
                 err_fn,
                 None,
@@ -528,20 +574,94 @@ fn play(samples: &[f32], rate: u32, volume: f32, generation: u64) -> Result<(), 
     }
     .map_err(|e| format!("打开扬声器失败：{e}"))?;
     stream.play().map_err(|e| format!("开始播放失败：{e}"))?;
-    // 等读完（多留一点时间让缓冲区放完），或者被打断
-    let total = data.len();
-    let deadline = Instant::now() + Duration::from_secs_f64(total as f64 / out_rate as f64 + 2.0);
-    while pos.load(Ordering::Relaxed) < total + out_rate as usize / 10 && Instant::now() < deadline {
-        if GENERATION.load(Ordering::SeqCst) != generation {
+    // 收后面的句子，直到都读完或者被打断
+    let mut open = true;
+    let mut drained_at: Option<Instant> = None;
+    loop {
+        if interrupted() {
             break;
         }
-        std::thread::sleep(Duration::from_millis(30));
+        if open {
+            match rx.recv_timeout(Duration::from_millis(30)) {
+                Ok(a) => {
+                    let more = prepare(a);
+                    queue.lock().unwrap().extend(more);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => open = false,
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        if queue.lock().unwrap().is_empty() {
+            // 不再有新句子时，多留 0.1 秒让声卡缓冲区放完
+            let at = *drained_at.get_or_insert_with(Instant::now);
+            if !open && at.elapsed() > Duration::from_millis(100) {
+                break;
+            }
+        } else {
+            drained_at = None;
+        }
     }
     drop(stream);
     Ok(())
 }
 
 // ---------- 文字处理 ----------
+
+/// 按句子切开要读的话，用来逐句合成。不足 min 字的句子并到下一句；超过 max 字的在逗号处切开，没有逗号就硬切
+pub fn sentences(text: &str, min: usize, max: usize) -> Vec<String> {
+    const ENDS: &str = "。！？!?；;…";
+    // 跟在句末标点后面、还算这一句的：更多标点、右引号和右括号
+    const TRAIL: &str = "。！？!?；;….」』”\"’）)";
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut raw: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut ending = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        cur.push(c);
+        // 英文句号后面要有空格或结尾才算句末（小数点不切）
+        if ENDS.contains(c) || (c == '.' && chars.peek().is_none_or(|n| n.is_whitespace())) {
+            ending = true;
+        }
+        if ending && !chars.peek().is_some_and(|n| TRAIL.contains(*n)) {
+            raw.push(std::mem::take(&mut cur));
+            ending = false;
+        }
+    }
+    raw.push(cur);
+    // 太长的在逗号处切
+    let mut split: Vec<String> = Vec::new();
+    for s in raw.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        let mut rest: Vec<char> = s.chars().collect();
+        while rest.len() > max {
+            let cut = rest[..max].iter().rposition(|c| "，,、：:".contains(*c)).map(|i| i + 1).filter(|&i| i >= min).unwrap_or(max);
+            split.push(rest[..cut].iter().collect::<String>().trim().to_string());
+            rest.drain(..cut);
+        }
+        split.push(rest.iter().collect::<String>().trim().to_string());
+    }
+    // 太短的并到下一句；最后剩下的短句并到前一句
+    let mut out: Vec<String> = Vec::new();
+    let mut pending = String::new();
+    for s in split.into_iter().filter(|s| !s.is_empty()) {
+        if !pending.is_empty() && pending.chars().count() + s.chars().count() > max {
+            out.push(std::mem::take(&mut pending));
+        }
+        pending.push_str(&s);
+        if pending.chars().count() >= min {
+            out.push(std::mem::take(&mut pending));
+        }
+    }
+    if !pending.is_empty() {
+        match out.last_mut() {
+            Some(last) if last.chars().count() + pending.chars().count() <= max => last.push_str(&pending),
+            _ => out.push(pending),
+        }
+    }
+    out
+}
 
 /// 对话回复只读开头：按句子取，取到超过 max 字为止；第一句就太长时在 max 字处截断
 pub fn excerpt(text: &str, max: usize) -> String {
@@ -687,6 +807,39 @@ mod tests {
         assert!(!wants(&p, What::System));
         p.read_replies = false;
         assert!(!wants(&p, What::Reply));
+    }
+
+    #[test]
+    fn splits_into_sentences_for_streaming() {
+        assert_eq!(sentences("你好呀！今天天气真好。我们出去玩吧？", 4, 80), ["你好呀！", "今天天气真好。", "我们出去玩吧？"]);
+        // 短句并到下一句，最后剩下的短句并到前一句
+        assert_eq!(sentences("嗯。好的。我知道了，马上就去。哦", 4, 80), ["嗯。好的。", "我知道了，马上就去。哦"]);
+        // 连续标点和引号不拆开
+        assert_eq!(sentences("真的吗？！「对呀。」那太好了……", 2, 80), ["真的吗？！", "「对呀。」", "那太好了……"]);
+        // 英文句号后面要有空格才算句末，小数点不切
+        assert_eq!(sentences("It costs 3.5 dollars. Nice!", 4, 80), ["It costs 3.5 dollars.", "Nice!"]);
+        // 太长的在逗号处切，没逗号就硬切
+        assert_eq!(sentences("一二三四五，六七八九十，甲乙丙丁戊。", 2, 8), ["一二三四五，", "六七八九十，", "甲乙丙丁戊。"]);
+        assert_eq!(sentences("一二三四五六七八九十", 2, 4), ["一二三四", "五六七八", "九十"]);
+        assert!(sentences("  ", 4, 80).is_empty());
+    }
+
+    #[test]
+    fn persona_voice_overrides_only_what_it_sets() {
+        use crate::config::PersonaVoice;
+        let global = TtsParams {
+            local_lora: Some("roselia".into()),
+            local_speaker: Some("yukina".into()),
+            speak_language: Some("ja".into()),
+            voice: Some("alloy".into()),
+            ..Default::default()
+        };
+        assert_eq!(global.for_persona(&PersonaVoice::default()).local_speaker.as_deref(), Some("yukina"));
+        let t = global.for_persona(&PersonaVoice { local_lora: Some("roselia".into()), local_speaker: Some("sayo".into()), voice: Some("nova".into()), ..Default::default() });
+        assert_eq!((t.local_speaker.as_deref(), t.voice.as_deref(), t.speak_language.as_deref()), (Some("sayo"), Some("nova"), Some("ja")));
+        // 人格用参考音频时不再用全局的角色声音；朗读语言填空表示不翻译
+        let t = global.for_persona(&PersonaVoice { local_ref_audio: Some("D:/a.wav".into()), local_ref_lang: Some("ja".into()), speak_language: Some(String::new()), ..Default::default() });
+        assert_eq!((t.local_lora, t.local_ref_audio.as_deref(), t.local_ref_lang.as_str(), t.speak_language), (None, Some("D:/a.wav"), "ja", None));
     }
 
     #[test]
