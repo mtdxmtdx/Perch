@@ -18,6 +18,7 @@ import {
   type AgentsParams,
   type ProactiveParams,
   type AwarenessParams,
+  type LocalVoice,
   type VisionProcessRule,
   type AgentsOverview,
   type AgentId,
@@ -719,6 +720,8 @@ function TtsSection({ draft, update }: TabProps) {
   const set = (patch: Partial<TtsParams>) => update((d) => ({ ...d, tts: { ...d.tts, ...patch } }));
   const [sample, setSample] = useState("你好呀，我是你的桌面小伙伴，今天也一起加油吧！");
   const [test, setTest] = useState<{ ok: boolean; text: string } | "running" | null>(null);
+  const [localVoices, setLocalVoices] = useState<LocalVoice[]>([]);
+  const [voicesMsg, setVoicesMsg] = useState<string | null>(null);
   const cloudModel = draft.providers.find((p) => p.id === draft.roles.tts);
   const voices = TTS_VOICES.find(([prefix]) => cloudModel?.model.startsWith(prefix))?.[1] ?? [];
 
@@ -726,6 +729,19 @@ function TtsSection({ draft, update }: TabProps) {
     const f = await openDialog({ title: "选择参考音频", filters: [{ name: "音频", extensions: ["wav", "mp3", "flac", "ogg", "m4a"] }] });
     if (typeof f === "string") set({ local_ref_audio: f });
   };
+  const loadVoices = async () => {
+    setVoicesMsg("读取中…");
+    try {
+      const v = await api.ttsLocalVoices(t.local_url);
+      setLocalVoices(v);
+      setVoicesMsg(v.length ? `找到 ${v.length} 个角色声音` : "这个服务没有角色声音，请用参考音频");
+    } catch (e) {
+      setVoicesMsg(errorText(e));
+    }
+  };
+  const voiceKey = (lora: string | null, speaker: string | null) => (lora ? `${lora}|${speaker ?? ""}` : "");
+  const voiceName = (v: LocalVoice) => `${v.lora.replace(/_qwen3tts$/, "")}${v.speaker ? ` / ${v.speaker}` : ""}`;
+  const currentVoice = voiceKey(t.local_lora, t.local_speaker);
   const runTest = async () => {
     setTest("running");
     try {
@@ -783,6 +799,32 @@ function TtsSection({ draft, update }: TabProps) {
             </label>
             <input value={t.local_url} onChange={(e) => set({ local_url: e.target.value })} />
             <label>
+              角色声音
+              <div className="small muted">服务里预置的声音（比如 Qwen3TTS 的 LoRA），选了就不用参考音频。{voicesMsg}</div>
+            </label>
+            <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto" }}>
+              <select
+                value={currentVoice}
+                onChange={(e) => {
+                  const [lora, speaker] = e.target.value.split("|");
+                  set({ local_lora: lora || null, local_speaker: speaker || null });
+                }}
+              >
+                <option value="">不用（用参考音频）</option>
+                {t.local_lora && !localVoices.some((v) => voiceKey(v.lora, v.speaker) === currentVoice) && (
+                  <option value={currentVoice}>{voiceName({ lora: t.local_lora, speaker: t.local_speaker })}</option>
+                )}
+                {localVoices.map((v) => (
+                  <option key={voiceKey(v.lora, v.speaker)} value={voiceKey(v.lora, v.speaker)}>
+                    {voiceName(v)}
+                  </option>
+                ))}
+              </select>
+              <button onClick={() => void loadVoices()}>读取列表</button>
+            </div>
+            {!t.local_lora && (
+              <>
+            <label>
               参考音频
               <div className="small muted">要模仿的声音，3～10 秒的干净人声；路径要是服务那台机器能读到的</div>
             </label>
@@ -795,12 +837,14 @@ function TtsSection({ draft, update }: TabProps) {
               <div className="small muted">可选：参考音频里说的话，填了更像</div>
             </label>
             <input value={t.local_ref_text ?? ""} onChange={(e) => set({ local_ref_text: e.target.value || null })} />
+              </>
+            )}
             <label>
               语言
-              <div className="small muted">参考音频 / 要读的文字的语言代码，按服务的要求填（GPT-SoVITS 用 zh、ja、en）</div>
+              <div className="small muted">{t.local_lora ? "要读的文字的语言代码" : "参考音频 / 要读的文字的语言代码"}，按服务的要求填（GPT-SoVITS 用 zh、ja、en）</div>
             </label>
-            <div className="reasoning-row" style={{ gridTemplateColumns: "1fr 1fr" }}>
-              <input list="tts-langs" value={t.local_ref_lang} onChange={(e) => set({ local_ref_lang: e.target.value })} />
+            <div className="reasoning-row" style={{ gridTemplateColumns: t.local_lora ? "1fr" : "1fr 1fr" }}>
+              {!t.local_lora && <input list="tts-langs" value={t.local_ref_lang} onChange={(e) => set({ local_ref_lang: e.target.value })} />}
               <input list="tts-langs" value={t.local_text_lang} onChange={(e) => set({ local_text_lang: e.target.value })} />
               <datalist id="tts-langs">
                 {["zh", "ja", "en", "auto", "Chinese", "Japanese", "English"].map((v) => (
@@ -813,7 +857,10 @@ function TtsSection({ draft, update }: TabProps) {
 
         {t.provider !== "none" && (
           <>
-            <label>语速 / 音量</label>
+            <label>
+              语速 / 音量
+              {t.provider === "local" && <div className="small muted">语速要服务支持才有效，Qwen3TTS 不支持</div>}
+            </label>
             <div className="reasoning-row" style={{ gridTemplateColumns: "1fr 1fr" }}>
               {num(t.speed, 0.5, 2, 0.1, (v) => set({ speed: v }))}
               {num(t.volume, 0, 2, 0.1, (v) => set({ volume: v }))}

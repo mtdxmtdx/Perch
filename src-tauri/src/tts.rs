@@ -165,22 +165,69 @@ async fn cloud(cfg: &Config, text: &str) -> Result<Vec<u8>, String> {
 }
 
 /// GPT-SoVITS 风格的本地服务：POST JSON，返回 wav
+fn filled(s: &Option<String>) -> Option<&str> {
+    s.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// 请求内容：选了服务里的角色声音就用它，否则要有参考音频
+fn local_body(p: &TtsParams, text: &str) -> Result<serde_json::Value, String> {
+    let mut body = serde_json::json!({
+        "text": text,
+        "text_language": p.local_text_lang.trim(),
+        "media_type": "wav",
+    });
+    if let Some(lora) = filled(&p.local_lora) {
+        body["lora_id"] = lora.into();
+        if let Some(s) = filled(&p.local_speaker) {
+            body["speaker"] = s.into();
+        }
+        return Ok(body);
+    }
+    body["refer_wav_path"] = filled(&p.local_ref_audio).ok_or("还没有选参考音频或角色声音")?.into();
+    if let Some(t) = filled(&p.local_ref_text) {
+        body["prompt_text"] = t.into();
+        body["prompt_language"] = p.local_ref_lang.trim().into();
+    }
+    Ok(body)
+}
+
+/// 服务里预置的一个角色声音
+#[derive(serde::Serialize, Debug, PartialEq, Eq)]
+pub struct LocalVoice {
+    pub lora: String,
+    pub speaker: Option<String>,
+}
+
+/// 解析 GET /lora/list 的返回；单说话人的 LoRA 没有 speakers
+fn parse_voices(v: &serde_json::Value) -> Option<Vec<LocalVoice>> {
+    let mut out = Vec::new();
+    for (lora, info) in v.get("loras")?.as_object()? {
+        let speakers: Vec<&str> = info.get("speakers").and_then(|s| s.as_array()).map(|a| a.iter().filter_map(|s| s.as_str()).collect()).unwrap_or_default();
+        if speakers.is_empty() {
+            out.push(LocalVoice { lora: lora.clone(), speaker: None });
+        }
+        out.extend(speakers.iter().map(|s| LocalVoice { lora: lora.clone(), speaker: Some((*s).to_string()) }));
+    }
+    Some(out)
+}
+
+/// 问本地服务有哪些角色声音（设置页用）
+pub async fn local_voices(url: &str) -> Result<Vec<LocalVoice>, String> {
+    let url = format!("{}/lora/list", url.trim().trim_end_matches('/'));
+    let resp = http().get(&url).timeout(Duration::from_secs(10)).send().await.map_err(|e| format!("连不上本地 TTS 服务：{e}"))?;
+    if !resp.status().is_success() {
+        return Err("这个服务没有提供角色声音列表，请用参考音频".into());
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| format!("读不懂服务返回的内容：{e}"))?;
+    parse_voices(&v).ok_or_else(|| "读不懂服务返回的内容".to_string())
+}
+
 async fn local(p: &TtsParams, text: &str) -> Result<Vec<u8>, String> {
     let url = p.local_url.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("本地服务地址要以 http:// 开头，比如 http://127.0.0.1:9880/".into());
     }
-    let refer = p.local_ref_audio.as_deref().map(str::trim).filter(|s| !s.is_empty()).ok_or("还没有选参考音频")?;
-    let mut body = serde_json::json!({
-        "refer_wav_path": refer,
-        "text": text,
-        "text_language": p.local_text_lang.trim(),
-        "media_type": "wav",
-    });
-    if let Some(t) = p.local_ref_text.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        body["prompt_text"] = t.into();
-        body["prompt_language"] = p.local_ref_lang.trim().into();
-    }
+    let mut body = local_body(p, text)?;
     let speed = (p.speed - 1.0).abs() > 0.01;
     if speed {
         body["speed_factor"] = p.speed.clamp(0.5, 2.0).into();
@@ -409,6 +456,38 @@ mod tests {
         let md = "# 标题\n**好的**，看 [文档](https://x.y/z)：\n```rust\nfn main() {}\n```\n- 第一条\n> 引用";
         assert_eq!(plain_text(md), "标题\n好的，看 文档：\n（代码略）\n第一条\n引用");
         assert_eq!(plain_text("   "), "");
+    }
+
+    #[test]
+    fn local_request_uses_character_voice_or_reference_audio() {
+        let mut p = TtsParams::default();
+        assert!(local_body(&p, "你好").unwrap_err().contains("参考音频"));
+
+        p.local_ref_audio = Some("D:/ref.wav".into());
+        p.local_ref_text = Some("参考".into());
+        let b = local_body(&p, "你好").unwrap();
+        assert_eq!((b["refer_wav_path"].as_str(), b["prompt_text"].as_str()), (Some("D:/ref.wav"), Some("参考")));
+        assert!(b.get("lora_id").is_none());
+
+        // 选了角色声音就不发参考音频
+        p.local_lora = Some("roselia_qwen3tts".into());
+        p.local_speaker = Some("yukina".into());
+        let b = local_body(&p, "你好").unwrap();
+        assert_eq!((b["lora_id"].as_str(), b["speaker"].as_str()), (Some("roselia_qwen3tts"), Some("yukina")));
+        assert!(b.get("refer_wav_path").is_none() && b.get("prompt_text").is_none());
+    }
+
+    #[test]
+    fn parses_voice_list() {
+        let v = serde_json::json!({ "active_lora_id": null, "loras": {
+            "roselia": { "speakers": ["yukina", "lisa"], "multi_speaker": true },
+            "solo": { "speakers": [], "multi_speaker": false },
+        }});
+        let voices = parse_voices(&v).unwrap();
+        assert_eq!(voices.len(), 3);
+        assert_eq!(voices[0], LocalVoice { lora: "roselia".into(), speaker: Some("yukina".into()) });
+        assert_eq!(voices[2], LocalVoice { lora: "solo".into(), speaker: None });
+        assert!(parse_voices(&serde_json::json!({ "code": 400 })).is_none());
     }
 
     #[test]

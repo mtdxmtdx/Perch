@@ -91,6 +91,9 @@ pub struct TtsParams {
     pub local_ref_lang: String,
     /// 要读的文字的语言
     pub local_text_lang: String,
+    /// 服务里预置的角色声音（Qwen3TTS 的 LoRA）；选了就不用参考音频
+    pub local_lora: Option<String>,
+    pub local_speaker: Option<String>,
 }
 
 impl Default for TtsParams {
@@ -110,6 +113,8 @@ impl Default for TtsParams {
             local_ref_text: None,
             local_ref_lang: "zh".into(),
             local_text_lang: "zh".into(),
+            local_lora: None,
+            local_speaker: None,
         }
     }
 }

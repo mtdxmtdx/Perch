@@ -205,6 +205,7 @@ pub fn run() {
             commands::relation_get,
             commands::skin_import,
             commands::tts_test,
+            commands::tts_local_voices,
             commands::model_setup_pending,
             commands::model_setup_dismiss,
             commands::model_setup_save,

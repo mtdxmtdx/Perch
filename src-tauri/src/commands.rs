@@ -347,6 +347,12 @@ pub async fn tts_test(app: AppHandle, state: State<'_, AppState>, settings: Sett
     crate::tts::test(&app, cfg, &text).await
 }
 
+/// 问本地 TTS 服务有哪些角色声音
+#[tauri::command]
+pub async fn tts_local_voices(url: String) -> Result<Vec<crate::tts::LocalVoice>, String> {
+    crate::tts::local_voices(&url).await
+}
+
 /// 新用户引导卡片是否要显示
 #[tauri::command]
 pub fn model_setup_pending(app: AppHandle) -> bool {
