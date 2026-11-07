@@ -18,7 +18,7 @@ pub enum Source {
     Proactive,
 }
 
-fn pet_hidden(app: &AppHandle) -> bool {
+pub fn pet_hidden(app: &AppHandle) -> bool {
     app.state::<AppState>().shared.lock().unwrap().pet_hidden
 }
 

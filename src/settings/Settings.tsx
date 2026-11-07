@@ -922,7 +922,7 @@ function TtsSection({ draft, update }: TabProps) {
       <h3>语音输出（朗读）</h3>
       <p className="muted small">
         默认不读。选一个朗读引擎后，桌宠会把主动说的话和对话回复的开头读出来。全屏、开会、直播时不出声；要读的文字会发给你选的服务。
-        长的话按句子逐句合成，第一句好了就开始读。每个人格可以在「人格」页设自己的声音，这里是默认的。
+        每个人格可以在「人格」页设自己的声音，这里是默认的。
       </p>
       <div className="grid2 params">
         <label>朗读引擎</label>
@@ -1054,6 +1054,17 @@ function TtsSection({ draft, update }: TabProps) {
               </label>
               <label>
                 <input type="checkbox" checked={t.mute_when_quiet} onChange={(e) => set({ mute_when_quiet: e.target.checked })} /> 工作模式和免打扰时段不出声
+              </label>
+            </div>
+            <label>
+              逐句合成
+              <div className="small muted">
+                开着：一句句合成，第一句好了就开始读，对话回复还在生成时也开始读（选了朗读语言时要整段翻译，等回复说完再读）。关掉：整段合成后再读，语调更连贯，但要多等
+              </div>
+            </label>
+            <div className="checks">
+              <label>
+                <input type="checkbox" checked={t.split_sentences} onChange={(e) => set({ split_sentences: e.target.checked })} /> 第一句好了就开始读
               </label>
             </div>
             <label>
