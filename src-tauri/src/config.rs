@@ -93,6 +93,10 @@ pub struct TtsParams {
     pub local_text_lang: String,
     /// 用日语说：朗读前翻译成日语，显示的文字不变
     pub speak_japanese: bool,
+    /// Perch 启动时运行本地服务的启动脚本，退出时关掉它
+    pub local_autostart: bool,
+    /// 启动脚本（.bat、.cmd 或 .exe）
+    pub local_start_script: Option<String>,
     /// 服务里预置的角色声音（Qwen3TTS 的 LoRA）；选了就不用参考音频
     pub local_lora: Option<String>,
     pub local_speaker: Option<String>,
@@ -116,6 +120,8 @@ impl Default for TtsParams {
             local_ref_lang: "zh".into(),
             local_text_lang: "zh".into(),
             speak_japanese: false,
+            local_autostart: false,
+            local_start_script: None,
             local_lora: None,
             local_speaker: None,
         }

@@ -16,7 +16,10 @@
 use crate::config::{Config, TtsParams};
 use crate::llm::{self, ChatMessage, Endpoint};
 use crate::AppState;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
@@ -292,6 +295,82 @@ async fn local(p: &TtsParams, text: &str, japanese: bool) -> Result<Vec<u8>, Str
     wav_body(resp).await
 }
 
+// ---------- 随 Perch 启动本地服务 ----------
+
+/// Perch 启动的服务进程。用户自己开的服务不在这里，退出时也不会动
+static SERVICE: Mutex<Option<Child>> = Mutex::new(None);
+
+/// 按设置在后台启动本地服务；服务已经在跑就不管
+pub fn autostart_service(app: &AppHandle) {
+    let p = app.state::<AppState>().config.lock().unwrap().tts.clone();
+    if p.provider != "local" || !p.local_autostart {
+        return;
+    }
+    let Some(script) = filled(&p.local_start_script).map(str::to_string) else { return };
+    tauri::async_runtime::spawn(async move {
+        // 有任何回应都算服务已经在跑（根路径没带参数时会返回错误，这没关系）
+        if http().get(p.local_url.trim()).timeout(Duration::from_millis(1500)).send().await.is_ok() {
+            eprintln!("[tts] 本地服务已经在运行");
+            return;
+        }
+        match start_service(Path::new(&script)) {
+            Ok(child) => {
+                eprintln!("[tts] 已启动本地服务 {script}");
+                *SERVICE.lock().unwrap() = Some(child);
+            }
+            Err(e) => eprintln!("[tts] 启动本地服务失败：{e}"),
+        }
+    });
+}
+
+/// 不开窗口运行脚本，输出写到数据目录的 tts-service.log。stdin 接空，脚本末尾的 pause 不会卡住
+fn start_service(script: &Path) -> Result<Child, String> {
+    if !script.is_file() {
+        return Err(format!("找不到 {}", script.display()));
+    }
+    let log = std::fs::File::create(crate::config::data_dir().join("tts-service.log")).map_err(|e| e.to_string())?;
+    let log2 = log.try_clone().map_err(|e| e.to_string())?;
+    let mut cmd = service_command(script);
+    if let Some(dir) = script.parent() {
+        cmd.current_dir(dir);
+    }
+    cmd.stdin(Stdio::null()).stdout(log).stderr(log2).spawn().map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn service_command(script: &Path) -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let ext = script.extension().and_then(|e| e.to_str()).unwrap_or_default().to_lowercase();
+    let mut cmd = if ext == "bat" || ext == "cmd" {
+        let mut c = Command::new("cmd");
+        // cmd /C 会去掉最外层引号，路径有空格时要再包一层
+        c.raw_arg(format!("/C \"\"{}\"\"", script.display()));
+        c
+    } else {
+        Command::new(script)
+    };
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn service_command(script: &Path) -> Command {
+    Command::new(script)
+}
+
+/// Perch 退出时调用：关掉自己启动的服务，连同它启动的子进程（脚本里的 python）
+pub fn stop_service() {
+    let Some(mut child) = SERVICE.lock().unwrap().take() else { return };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill").args(["/PID", &child.id().to_string(), "/T", "/F"]).creation_flags(0x0800_0000).output();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 // ---------- 解码和播放 ----------
 
 /// 解析 wav：支持 16 位整数、24 位、32 位整数和 32 位浮点 PCM，多声道混成单声道。
@@ -533,6 +612,13 @@ mod tests {
         assert!(has_kana("続けましょう") && has_kana("カタカナ"));
         assert!(!has_kana("继续吧") && !has_kana("hello"));
         assert_eq!(clean_translation(" 「続けましょう」\n"), "続けましょう");
+    }
+
+    #[test]
+    fn service_is_off_by_default_and_reports_missing_script() {
+        let p = TtsParams::default();
+        assert!(!p.local_autostart && p.local_start_script.is_none());
+        assert!(start_service(Path::new("D:/没有这个/start.bat")).unwrap_err().contains("找不到"));
     }
 
     #[test]

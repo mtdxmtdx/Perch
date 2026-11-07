@@ -251,8 +251,14 @@ pub fn run() {
             agents::start(app.handle());
             proactive::start(app.handle());
             onboarding::start(app.handle());
+            tts::autostart_service(app.handle());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("启动 Perch 失败");
+        .build(tauri::generate_context!())
+        .expect("启动 Perch 失败")
+        .run(|_, event| {
+            if let tauri::RunEvent::Exit = event {
+                tts::stop_service();
+            }
+        });
 }

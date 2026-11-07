@@ -729,6 +729,10 @@ function TtsSection({ draft, update }: TabProps) {
     const f = await openDialog({ title: "选择参考音频", filters: [{ name: "音频", extensions: ["wav", "mp3", "flac", "ogg", "m4a"] }] });
     if (typeof f === "string") set({ local_ref_audio: f });
   };
+  const pickScript = async () => {
+    const f = await openDialog({ title: "选择启动脚本", filters: [{ name: "脚本或程序", extensions: ["bat", "cmd", "exe"] }] });
+    if (typeof f === "string") set({ local_start_script: f });
+  };
   const loadVoices = async () => {
     setVoicesMsg("读取中…");
     try {
@@ -798,6 +802,23 @@ function TtsSection({ draft, update }: TabProps) {
               <div className="small muted">GPT-SoVITS 的 api.py、BandoriPet 的 Qwen3TTS 后端等，默认 http://127.0.0.1:9880/</div>
             </label>
             <input value={t.local_url} onChange={(e) => set({ local_url: e.target.value })} />
+            <label>
+              自动启动服务
+              <div className="small muted">Perch 启动时在后台运行这个脚本，退出时关掉它，下次启动 Perch 生效。服务已经在运行时不会重复启动，也不会被关掉。只选你信任的脚本</div>
+            </label>
+            <div>
+              <div className="checks">
+                <label>
+                  <input type="checkbox" checked={t.local_autostart} onChange={(e) => set({ local_autostart: e.target.checked })} /> 随 Perch 启动
+                </label>
+              </div>
+              {t.local_autostart && (
+                <div className="reasoning-row" style={{ gridTemplateColumns: "1fr auto", marginTop: 6 }}>
+                  <input value={t.local_start_script ?? ""} placeholder="比如 D:\\Qwen3TTS\\start_tts.bat" onChange={(e) => set({ local_start_script: e.target.value || null })} />
+                  <button onClick={() => void pickScript()}>选择…</button>
+                </div>
+              )}
+            </div>
             <label>
               角色声音
               <div className="small muted">服务里预置的声音（比如 Qwen3TTS 的 LoRA），选了就不用参考音频。{voicesMsg}</div>
