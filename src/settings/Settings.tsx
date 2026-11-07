@@ -41,6 +41,7 @@ interface Draft {
   agents: AgentsParams;
   proactive: ProactiveParams;
   awareness: AwarenessParams;
+  timezone: string | null;
   tts: TtsParams;
 }
 
@@ -83,7 +84,7 @@ export function Settings() {
 
   const load = async () => {
     const s = await api.settingsGet();
-    setDraft({ providers: s.providers.map(({ hasKey: _, reasoningIgnored: __, ...p }) => p), roles: s.roles, personas: s.personas, activePersona: s.activePersona, chat: s.chat, tools: s.tools, image: s.image, voice: s.voice, agents: s.agents, proactive: s.proactive, awareness: s.awareness, tts: s.tts });
+    setDraft({ providers: s.providers.map(({ hasKey: _, reasoningIgnored: __, ...p }) => p), roles: s.roles, personas: s.personas, activePersona: s.activePersona, chat: s.chat, tools: s.tools, image: s.image, voice: s.voice, agents: s.agents, proactive: s.proactive, awareness: s.awareness, timezone: s.timezone, tts: s.tts });
     setLocked({ processes: s.captureLockedProcesses, titles: s.captureLockedTitleKeywords });
     setPicturesDir(s.picturesDir);
     setHasKey(Object.fromEntries(s.providers.map((p) => [p.id, p.hasKey])));
@@ -151,11 +152,11 @@ export function Settings() {
         {tab === "tools" && <ToolsTab draft={draft} update={update} picturesDir={picturesDir} />}
         {tab === "voice" && <VoiceTab draft={draft} update={update} />}
         {tab === "agents" && <AgentsTab draft={draft} update={update} />}
-        {tab === "memory" && <MemoryTab />}
+        {tab === "memory" && <MemoryTab timezone={draft.timezone} />}
         {tab === "params" && <ParamsTab draft={draft} update={update} />}
         {tab === "companion" && <CompanionTab draft={draft} update={update} />}
         {tab === "awareness" && <AwarenessTab draft={draft} update={update} locked={locked} />}
-        {tab === "general" && <GeneralTab />}
+        {tab === "general" && <GeneralTab draft={draft} update={update} />}
       </main>
       {tab !== "memory" && (
         <footer>
@@ -970,7 +971,7 @@ function AgentsTab({ draft, update }: TabProps) {
   );
 }
 
-function MemoryTab() {
+function MemoryTab({ timezone }: { timezone: string | null }) {
   const [items, setItems] = useState<Memory[]>([]);
   const [edit, setEdit] = useState<{ id: number | null; kind: string; content: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -1024,7 +1025,7 @@ function MemoryTab() {
               ) : (
                 <div className="memory" key={m.id}>
                   <span>{m.content}</span>
-                  <span className="muted small">{new Date(m.updatedAt * 1000).toLocaleDateString()}</span>
+                  <span className="muted small">{new Date(m.updatedAt * 1000).toLocaleDateString(undefined, { timeZone: timezone ?? undefined })}</span>
                   <button className="icon" title="编辑" onClick={() => setEdit({ id: m.id, kind: m.kind, content: m.content })}>
                     ✎
                   </button>
@@ -1517,12 +1518,42 @@ function ListInput({ value, disabled, onChange }: { value: string[]; disabled?: 
   return <textarea rows={3} value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onBlur={commit} />;
 }
 
-/** 常规：开机自启动（直接写注册表，立即生效，不用点保存） */
-function GeneralTab() {
+/** 时区选项：名字给程序用，夏令时由程序按时区自动算 */
+const TIMEZONES: [string, string][] = [
+  ["Asia/Shanghai", "中国（北京）"],
+  ["Asia/Hong_Kong", "中国香港"],
+  ["Asia/Taipei", "中国台北"],
+  ["Asia/Tokyo", "日本（东京）"],
+  ["Asia/Seoul", "韩国（首尔）"],
+  ["Asia/Singapore", "新加坡"],
+  ["Asia/Bangkok", "泰国（曼谷）"],
+  ["Asia/Kolkata", "印度"],
+  ["Asia/Dubai", "阿联酋（迪拜）"],
+  ["Europe/Moscow", "俄罗斯（莫斯科）"],
+  ["Europe/London", "英国（伦敦）"],
+  ["Europe/Paris", "法国（巴黎）"],
+  ["Europe/Berlin", "德国（柏林）"],
+  ["America/New_York", "美国东部（纽约）"],
+  ["America/Chicago", "美国中部（芝加哥）"],
+  ["America/Denver", "美国山地（丹佛）"],
+  ["America/Los_Angeles", "美国西部（洛杉矶）"],
+  ["America/Toronto", "加拿大（多伦多）"],
+  ["America/Vancouver", "加拿大（温哥华）"],
+  ["America/Sao_Paulo", "巴西（圣保罗）"],
+  ["Australia/Perth", "澳大利亚（珀斯）"],
+  ["Australia/Sydney", "澳大利亚（悉尼）"],
+  ["Pacific/Auckland", "新西兰（奥克兰）"],
+  ["UTC", "UTC"],
+];
+
+/** 常规：开机自启动直接写注册表，立即生效；时区跟着「保存」走 */
+function GeneralTab({ draft, update }: TabProps) {
   const [on, setOn] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => void api.autostartGet().then(setOn), []);
+  const zone = draft.timezone;
+  const preview = new Date().toLocaleString("zh-CN", { timeZone: zone ?? undefined, dateStyle: "medium", timeStyle: "short", hour12: false });
 
   const toggle = async (v: boolean) => {
     setBusy(true);
@@ -1547,6 +1578,21 @@ function GeneralTab() {
         </div>
         <p className="muted small">默认关闭。只对当前 Windows 用户生效，改了立即生效；也可以在任务管理器的「启动应用」里管理。</p>
         {err && <div className="error">{err}</div>}
+      </section>
+      <section>
+        <h3>时区</h3>
+        <select value={zone ?? ""} onChange={(e) => update((d) => ({ ...d, timezone: e.target.value || null }))}>
+          <option value="">跟随系统</option>
+          {zone && !TIMEZONES.some(([id]) => id === zone) && <option value={zone}>{zone}</option>}
+          {TIMEZONES.map(([id, label]) => (
+            <option key={id} value={id}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <p className="muted small">
+          现在是 {preview}。定时提醒、就寝、免打扰时段、节日问候，以及告诉模型的当前时间都按这个时区算；夏令时会自动调整。点「保存」后生效。
+        </p>
       </section>
     </div>
   );

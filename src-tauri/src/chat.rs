@@ -59,13 +59,13 @@ pub(crate) fn set_speech(app: &AppHandle, anim: Option<&'static str>, until: Opt
 }
 
 pub(crate) fn now_label() -> String {
-    let now = chrono::Local::now();
+    let now = crate::clock::now();
     let week = ["一", "二", "三", "四", "五", "六", "日"][chrono::Datelike::weekday(&now).num_days_from_monday() as usize];
     format!("{}（周{}）", now.format("%Y-%m-%d %H:%M"), week)
 }
 
 fn today_label() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
+    crate::clock::now().format("%Y-%m-%d").to_string()
 }
 
 /// 用户消息发给模型的文字：原话 + 文件内容 + 图片转述

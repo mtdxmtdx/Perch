@@ -269,6 +269,8 @@ export interface SettingsView {
   agents: AgentsParams;
   proactive: ProactiveParams;
   awareness: AwarenessParams;
+  /** 时区名；null 跟随系统 */
+  timezone: string | null;
   captureLockedProcesses: string[];
   captureLockedTitleKeywords: string[];
   tts: TtsParams;
@@ -289,6 +291,7 @@ export interface SettingsIn {
   agents: AgentsParams;
   proactive: ProactiveParams;
   awareness: AwarenessParams;
+  timezone: string | null;
   tts: TtsParams;
 }
 
