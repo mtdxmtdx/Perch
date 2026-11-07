@@ -11,7 +11,8 @@
 //! 选了朗读语言时，朗读前先用辅助模型翻译成这种语言，显示的文字不变；翻译失败就读原文。
 //!
 //! 什么时候不出声：桌宠隐藏、全屏 / 开会 / 直播（静默状态）时不读；工作模式和免打扰时段默认也不读。
-//! 开始录音、发新消息、读下一句时打断正在读的。
+//! 要读的话排队，一段读完再读下一段（比如两条 agent 完成通知先后到）；
+//! 开始录音、发新消息时打断正在读的，并清掉排着的。
 //!
 //! 每个人格可以有自己的声音（`PersonaVoice`），没填的项跟随全局设置。
 //! 长的话按句子切开逐句合成：第一句合成好就开始读，读的同时合成下一句，接在同一条播放流后面。
@@ -66,11 +67,17 @@ fn sound_allowed(app: &AppHandle, p: &TtsParams) -> bool {
     !silent && (!quiet || !p.mute_when_quiet)
 }
 
-/// 每次开始读或打断时加一；播放中发现它变了就停
+/// 打断时加一：正在读的发现它变了就停，排着的轮到时发现它变了就不读
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// 正在处理的朗读数（翻译、合成、播放都算）。新的一句打断旧的时会短暂有两个
+/// 正在处理的朗读数（排队、翻译、合成、播放都算）
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// 同一时间只读一段；tokio 的锁按先来后到排队
+static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 最多排几段（含正在读的），再多的不读，免得一下子来很多通知时读个没完
+const MAX_QUEUED: usize = 5;
 
 /// 告诉气泡有没有在读：读完之前别收起。从第一句开始、到最后一句结束各发一次
 fn set_active(app: &AppHandle, on: bool) {
@@ -95,12 +102,20 @@ pub fn speak(app: &AppHandle, text: &str, what: What) {
     if text.is_empty() {
         return;
     }
-    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    if ACTIVE.load(Ordering::SeqCst) >= MAX_QUEUED {
+        eprintln!("[tts] 排队的太多了，这段不读");
+        return;
+    }
+    // 排到时如果期间被打断过（录音、发新消息），就不读了
+    let generation = GENERATION.load(Ordering::SeqCst);
     let app = app.clone();
     set_active(&app, true);
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = synth_and_play(&app, &cfg, &text, generation, false).await {
-            eprintln!("[tts] 朗读失败：{e}");
+        let _turn = TURN.lock().await;
+        if GENERATION.load(Ordering::SeqCst) == generation {
+            if let Err(e) = synth_and_play(&app, &cfg, &text, generation, false).await {
+                eprintln!("[tts] 朗读失败：{e}");
+            }
         }
         set_active(&app, false);
     });
@@ -120,12 +135,17 @@ pub async fn test(app: &AppHandle, mut cfg: Config, text: &str, persona: Option<
     if cfg.tts.provider == "none" {
         return Err("先选一个朗读引擎".into());
     }
+    // 试听打断正在读的和排着的，马上读
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let _turn = TURN.lock().await;
+    if GENERATION.load(Ordering::SeqCst) != generation {
+        return Ok(()); // 等的时候又被打断了
+    }
     // 试听时翻译失败要让用户看到原因
     synth_and_play(app, &cfg, &text, generation, true).await
 }
 
-/// 打断正在读的（开始录音、发新消息时）
+/// 打断正在读的，排着的也不读了（开始录音、发新消息时）
 pub fn stop() {
     GENERATION.fetch_add(1, Ordering::SeqCst);
 }
