@@ -20,6 +20,7 @@ mod store;
 mod tools;
 mod tray;
 mod tts;
+mod update;
 mod voice;
 mod windows;
 
@@ -206,6 +207,9 @@ pub fn run() {
             commands::skin_import,
             commands::tts_test,
             commands::tts_local_voices,
+            commands::update_check,
+            commands::update_download,
+            commands::update_install,
             commands::model_setup_pending,
             commands::model_setup_dismiss,
             commands::model_setup_save,

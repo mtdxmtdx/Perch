@@ -353,6 +353,24 @@ pub async fn tts_local_voices(url: String) -> Result<Vec<crate::tts::LocalVoice>
     crate::tts::local_voices(&url).await
 }
 
+/// 问 GitHub 有没有新版本
+#[tauri::command]
+pub async fn update_check(app: AppHandle) -> Result<crate::update::UpdateCheck, String> {
+    crate::update::check(&app).await
+}
+
+/// 下载并校验新版本的安装包，返回路径
+#[tauri::command]
+pub async fn update_download(app: AppHandle) -> Result<String, String> {
+    crate::update::download(&app).await
+}
+
+/// 运行安装包，Perch 随后退出
+#[tauri::command]
+pub fn update_install(app: AppHandle, path: String) -> Result<(), String> {
+    crate::update::install(&app, &path)
+}
+
 /// 新用户引导卡片是否要显示
 #[tauri::command]
 pub fn model_setup_pending(app: AppHandle) -> bool {

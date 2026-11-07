@@ -19,6 +19,7 @@ import {
   type ProactiveParams,
   type AwarenessParams,
   type LocalVoice,
+  type UpdateCheck,
   type VisionProcessRule,
   type AgentsOverview,
   type AgentId,
@@ -1612,6 +1613,73 @@ function ListInput({ value, disabled, onChange }: { value: string[]; disabled?: 
   return <textarea rows={3} value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onBlur={commit} />;
 }
 
+/** 检查更新：只有点按钮时才联网。下载后校验 SHA256，安装时 Perch 会退出，装完自动打开 */
+function UpdateSection() {
+  const [check, setCheck] = useState<UpdateCheck | null>(null);
+  const [state, setState] = useState<"idle" | "checking" | "downloading" | "installing">("idle");
+  const [progress, setProgress] = useState(0);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    const sub = listen<{ done: number; total: number }>("update-progress", (e) => setProgress(e.payload.total ? e.payload.done / e.payload.total : 0));
+    return () => void sub.then((f) => f());
+  }, []);
+
+  const runCheck = async () => {
+    setState("checking");
+    setErr(null);
+    try {
+      setCheck(await api.updateCheck());
+    } catch (e) {
+      setErr(errorText(e));
+    }
+    setState("idle");
+  };
+  const install = async () => {
+    setState("downloading");
+    setProgress(0);
+    setErr(null);
+    try {
+      const path = await api.updateDownload();
+      setState("installing");
+      await api.updateInstall(path);
+    } catch (e) {
+      setErr(errorText(e));
+      setState("idle");
+    }
+  };
+
+  const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
+  return (
+    <section>
+      <h3>更新</h3>
+      <div className="checks">
+        <button disabled={state !== "idle"} onClick={() => void runCheck()}>
+          {state === "checking" ? "检查中…" : "检查更新"}
+        </button>
+        {check && !check.newer && <span className="muted small">已经是最新版本（{check.current}）</span>}
+      </div>
+      {check?.newer && (
+        <>
+          <p>
+            有新版本 {check.release.version}（当前 {check.current}，{mb(check.release.size)} MB）
+          </p>
+          <pre className="muted small" style={{ whiteSpace: "pre-wrap", maxHeight: 180, overflow: "auto" }}>
+            {check.release.notes}
+          </pre>
+          <button disabled={state !== "idle"} onClick={() => void install()}>
+            {state === "downloading" ? `下载中 ${Math.round(progress * 100)}%` : state === "installing" ? "正在安装…" : "下载并安装"}
+          </button>
+        </>
+      )}
+      <p className="muted small">
+        从 GitHub 下载，校验 SHA256 后安装，设置和数据都不变。安装时 Perch 会退出，装完自动打开。只有点按钮时才联网。
+      </p>
+      {err && <div className="error">{err}</div>}
+    </section>
+  );
+}
+
 /** 时区选项：名字给程序用，夏令时由程序按时区自动算 */
 const TIMEZONES: [string, string][] = [
   ["Asia/Shanghai", "中国（北京）"],
@@ -1688,6 +1756,7 @@ function GeneralTab({ draft, update }: TabProps) {
           现在是 {preview}。定时提醒、就寝、免打扰时段、节日问候，以及告诉模型的当前时间都按这个时区算；夏令时会自动调整。点「保存」后生效。
         </p>
       </section>
+      <UpdateSection />
     </div>
   );
 }
