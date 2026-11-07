@@ -8,11 +8,13 @@
 //! - 桌宠主动说的话（agent 汇报、主动聊天）整句读；
 //! - 对话回复只读开头一小段（`reply_chars`），其余看文字。
 //!
+//! 打开「用日语说」时，朗读前先用辅助模型翻译成日语，显示的文字不变；翻译失败就读原文。
+//!
 //! 什么时候不出声：桌宠隐藏、全屏 / 开会 / 直播（静默状态）时不读；工作模式和免打扰时段默认也不读。
 //! 开始录音、发新消息、读下一句时打断正在读的。
 
 use crate::config::{Config, TtsParams};
-use crate::llm::Endpoint;
+use crate::llm::{self, ChatMessage, Endpoint};
 use crate::AppState;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -78,7 +80,7 @@ pub fn speak(app: &AppHandle, text: &str, what: What) {
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = synth_and_play(&app, &cfg, &text, generation).await {
+        if let Err(e) = synth_and_play(&app, &cfg, &text, generation, false).await {
             eprintln!("[tts] 朗读失败：{e}");
         }
     });
@@ -94,7 +96,8 @@ pub async fn test(app: &AppHandle, cfg: Config, text: &str) -> Result<(), String
         return Err("先选一个朗读引擎".into());
     }
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    synth_and_play(app, &cfg, &text, generation).await
+    // 试听时翻译失败要让用户看到原因
+    synth_and_play(app, &cfg, &text, generation, true).await
 }
 
 /// 打断正在读的（开始录音、发新消息时）
@@ -102,8 +105,19 @@ pub fn stop() {
     GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
-async fn synth_and_play(app: &AppHandle, cfg: &Config, text: &str, generation: u64) -> Result<(), String> {
-    let wav = synthesize(cfg, text).await?;
+async fn synth_and_play(app: &AppHandle, cfg: &Config, text: &str, generation: u64, strict: bool) -> Result<(), String> {
+    let japanese = match to_japanese(cfg, text).await {
+        Ok(t) => t,
+        Err(e) if strict => return Err(e),
+        Err(e) => {
+            eprintln!("[tts] 翻译成日语失败，读原文：{e}");
+            None
+        }
+    };
+    if GENERATION.load(Ordering::SeqCst) != generation {
+        return Ok(()); // 翻译期间被打断或者有新的要读
+    }
+    let wav = synthesize(cfg, japanese.as_deref().unwrap_or(text), japanese.is_some()).await?;
     if GENERATION.load(Ordering::SeqCst) != generation {
         return Ok(()); // 合成期间被打断或者有新的要读
     }
@@ -120,12 +134,47 @@ async fn synth_and_play(app: &AppHandle, cfg: &Config, text: &str, generation: u
         .map_err(|e| e.to_string())?
 }
 
+// ---------- 用日语说 ----------
+
+/// 有假名就当作已经是日语（只有汉字的话分不出来）
+fn has_kana(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, '\u{3040}'..='\u{30ff}'))
+}
+
+/// 模型偶尔会给译文加引号
+fn clean_translation(s: &str) -> String {
+    s.trim().trim_matches(|c: char| matches!(c, '"' | '“' | '”' | '「' | '」' | '『' | '』')).trim().to_string()
+}
+
+/// 要读的日语；没开「用日语说」时是 None
+async fn to_japanese(cfg: &Config, text: &str) -> Result<Option<String>, String> {
+    if !cfg.tts.speak_japanese {
+        return Ok(None);
+    }
+    if has_kana(text) {
+        return Ok(Some(text.to_string()));
+    }
+    let persona = cfg.active_persona();
+    let provider = cfg.aux_provider(&persona).ok_or("「用日语说」要先配一个对话或辅助模型来翻译")?;
+    let system = format!(
+        "把桌宠「{}」说的话翻译成自然的日语口语，用来语音朗读。保持原来的语气和情绪，人名和专有名词用日语的常见写法。\
+只输出译文，不要解释，不要加引号、括号或注音。",
+        persona.name
+    );
+    let messages = [ChatMessage::text("system", system), ChatMessage::text("user", text)];
+    let translated = clean_translation(&llm::chat_once(&Endpoint::from_provider(provider), &messages, Some(0.3)).await?);
+    if translated.is_empty() {
+        return Err("翻译模型没有返回内容".into());
+    }
+    Ok(Some(translated))
+}
+
 // ---------- 引擎 ----------
 
-async fn synthesize(cfg: &Config, text: &str) -> Result<Vec<u8>, String> {
+async fn synthesize(cfg: &Config, text: &str, japanese: bool) -> Result<Vec<u8>, String> {
     match cfg.tts.provider.as_str() {
         "cloud" => cloud(cfg, text).await,
-        "local" => local(&cfg.tts, text).await,
+        "local" => local(&cfg.tts, text, japanese).await,
         other => Err(format!("不认识的朗读引擎：{other}")),
     }
 }
@@ -170,10 +219,10 @@ fn filled(s: &Option<String>) -> Option<&str> {
 }
 
 /// 请求内容：选了服务里的角色声音就用它，否则要有参考音频
-fn local_body(p: &TtsParams, text: &str) -> Result<serde_json::Value, String> {
+fn local_body(p: &TtsParams, text: &str, japanese: bool) -> Result<serde_json::Value, String> {
     let mut body = serde_json::json!({
         "text": text,
-        "text_language": p.local_text_lang.trim(),
+        "text_language": if japanese { "ja" } else { p.local_text_lang.trim() },
         "media_type": "wav",
     });
     if let Some(lora) = filled(&p.local_lora) {
@@ -222,12 +271,12 @@ pub async fn local_voices(url: &str) -> Result<Vec<LocalVoice>, String> {
     parse_voices(&v).ok_or_else(|| "读不懂服务返回的内容".to_string())
 }
 
-async fn local(p: &TtsParams, text: &str) -> Result<Vec<u8>, String> {
+async fn local(p: &TtsParams, text: &str, japanese: bool) -> Result<Vec<u8>, String> {
     let url = p.local_url.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("本地服务地址要以 http:// 开头，比如 http://127.0.0.1:9880/".into());
     }
-    let mut body = local_body(p, text)?;
+    let mut body = local_body(p, text, japanese)?;
     let speed = (p.speed - 1.0).abs() > 0.01;
     if speed {
         body["speed_factor"] = p.speed.clamp(0.5, 2.0).into();
@@ -461,20 +510,29 @@ mod tests {
     #[test]
     fn local_request_uses_character_voice_or_reference_audio() {
         let mut p = TtsParams::default();
-        assert!(local_body(&p, "你好").unwrap_err().contains("参考音频"));
+        assert!(local_body(&p, "你好", false).unwrap_err().contains("参考音频"));
 
         p.local_ref_audio = Some("D:/ref.wav".into());
         p.local_ref_text = Some("参考".into());
-        let b = local_body(&p, "你好").unwrap();
+        let b = local_body(&p, "你好", false).unwrap();
         assert_eq!((b["refer_wav_path"].as_str(), b["prompt_text"].as_str()), (Some("D:/ref.wav"), Some("参考")));
+        assert_eq!(b["text_language"].as_str(), Some("zh"));
         assert!(b.get("lora_id").is_none());
 
         // 选了角色声音就不发参考音频
         p.local_lora = Some("roselia_qwen3tts".into());
         p.local_speaker = Some("yukina".into());
-        let b = local_body(&p, "你好").unwrap();
+        let b = local_body(&p, "こんにちは", true).unwrap();
+        assert_eq!(b["text_language"].as_str(), Some("ja"));
         assert_eq!((b["lora_id"].as_str(), b["speaker"].as_str()), (Some("roselia_qwen3tts"), Some("yukina")));
         assert!(b.get("refer_wav_path").is_none() && b.get("prompt_text").is_none());
+    }
+
+    #[test]
+    fn recognises_japanese_and_cleans_translation() {
+        assert!(has_kana("続けましょう") && has_kana("カタカナ"));
+        assert!(!has_kana("继续吧") && !has_kana("hello"));
+        assert_eq!(clean_translation(" 「続けましょう」\n"), "続けましょう");
     }
 
     #[test]

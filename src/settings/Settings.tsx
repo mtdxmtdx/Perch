@@ -865,6 +865,15 @@ function TtsSection({ draft, update }: TabProps) {
               {num(t.speed, 0.5, 2, 0.1, (v) => set({ speed: v }))}
               {num(t.volume, 0, 2, 0.1, (v) => set({ volume: v }))}
             </div>
+            <label>
+              用日语说
+              <div className="small muted">读之前用辅助模型翻译成日语，气泡和聊天记录里的文字不变。每句多等一两秒；翻译失败就读原文</div>
+            </label>
+            <div className="checks">
+              <label>
+                <input type="checkbox" checked={t.speak_japanese} onChange={(e) => set({ speak_japanese: e.target.checked })} /> 翻译成日语再读
+              </label>
+            </div>
             <label>读什么</label>
             <div className="checks" style={{ flexDirection: "column", alignItems: "flex-start" }}>
               <label>

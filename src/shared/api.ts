@@ -48,6 +48,7 @@ export interface TtsParams {
   local_ref_text: string | null;
   local_ref_lang: string;
   local_text_lang: string;
+  speak_japanese: boolean;
   local_lora: string | null;
   local_speaker: string | null;
 }
