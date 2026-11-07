@@ -68,6 +68,8 @@ export function Bubble() {
   // 新用户引导（接模型）还没回答时也不收起；它在的时候先不问 agent 接入
   const setupPending = useRef(false);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const saidAt = useRef(0);
   const onSetupPending = useCallback((p: boolean) => {
     setupPending.current = p;
     setSetupOpen(p);
@@ -86,7 +88,11 @@ export function Bubble() {
         if (e.payload === "input") setTimeout(() => inputRef.current?.focus(), 60);
       }),
       listen<Anchor>("bubble-anchor", (e) => setAnchor(e.payload)),
-      listen<string>("bubble-say", (e) => setSaid(e.payload)),
+      listen<string>("bubble-say", (e) => {
+        saidAt.current = Date.now();
+        setSaid(e.payload);
+      }),
+      listen<boolean>("tts-speaking", (e) => setSpeaking(e.payload)),
       listen<string[]>("bubble-attach", (e) => atts.add(fromPaths(e.payload))),
       listen("settings-changed", () => void api.settingsGet().then((s) => setMaxChars(s.chat.bubble_chars))),
       getCurrentWindow().onFocusChanged(({ payload: focused }) => {
@@ -125,12 +131,12 @@ export function Bubble() {
   }, [shown]);
   const truncated = !!reply && reply.length > maxChars;
 
-  // 说话模式：8 秒后自动收起，鼠标停在气泡上或接入询问还没回答时不收
+  // 说话模式：至少显示 8 秒后自动收起。朗读没结束、鼠标停在气泡上或接入询问还没回答时不收；读完再留 2 秒
   useEffect(() => {
-    if (mode !== "speak" || !said || hover || offerOpen || setupOpen) return;
-    const t = setTimeout(() => void api.bubbleClose(), 8000);
+    if (mode !== "speak" || !said || hover || offerOpen || setupOpen || speaking) return;
+    const t = setTimeout(() => void api.bubbleClose(), Math.max(2000, saidAt.current + 8000 - Date.now()));
     return () => clearTimeout(t);
-  }, [mode, said, hover, offerOpen, setupOpen]);
+  }, [mode, said, hover, offerOpen, setupOpen, speaking]);
 
   const submit = async () => {
     if (chat.busy || (!text.trim() && atts.items.length === 0)) return;
