@@ -68,7 +68,30 @@ export interface Persona {
   provider: string | null;
   temperature: number | null;
   skin: string | null;
+  voice: PersonaVoice;
 }
+
+/** 人格自己的声音：填了的覆盖「语音」页的设置，没填（null）的跟随 */
+export interface PersonaVoice {
+  voice: string | null;
+  local_lora: string | null;
+  local_speaker: string | null;
+  local_ref_audio: string | null;
+  local_ref_text: string | null;
+  local_ref_lang: string | null;
+  /** null 跟随；"" 不翻译 */
+  speak_language: string | null;
+}
+
+export const EMPTY_VOICE: PersonaVoice = {
+  voice: null,
+  local_lora: null,
+  local_speaker: null,
+  local_ref_audio: null,
+  local_ref_text: null,
+  local_ref_lang: null,
+  speak_language: null,
+};
 
 export interface ChatParams {
   context_tokens: number;
@@ -387,13 +410,13 @@ export const api = {
   memoryList: () => invoke<Memory[]>("memory_list"),
   memorySave: (id: number | null, kind: string, content: string) => invoke<void>("memory_save", { id, kind, content }),
   memoryDelete: (id: number) => invoke<void>("memory_delete", { id }),
-  /** 用还没保存的设置试听一句 */
   updateCheck: () => invoke<UpdateCheck>("update_check"),
   updateDownload: () => invoke<string>("update_download"),
   updateInstall: (path: string) => invoke<void>("update_install", { path }),
   ttsLocalVoices: (url: string) => invoke<LocalVoice[]>("tts_local_voices", { url }),
-  ttsTest: (settings: SettingsIn, text: string) =>
-    invoke<void>("tts_test", { settings, text }),
+  /** 用还没保存的设置试听一句；给了人格就用这个人格的声音 */
+  ttsTest: (settings: SettingsIn, text: string, persona?: string) =>
+    invoke<void>("tts_test", { settings, text, persona: persona ?? null }),
   skinImport: (path: string, apply = false) => invoke<SkinEntry>("skin_import", { path, apply }),
   modelSetupPending: () => invoke<boolean>("model_setup_pending"),
   modelSetupDismiss: () => invoke<void>("model_setup_dismiss"),
