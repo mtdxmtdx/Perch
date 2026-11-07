@@ -99,6 +99,10 @@ pub fn open_bubble(app: &AppHandle, mode: &str) {
     }
     let _ = app.emit_to(BUBBLE, "bubble-mode", mode);
     let _ = w.show();
+    // 隐藏再显示的窗口层级停在上次的位置，可能已经被后来的置顶窗口盖住
+    if let Ok(h) = w.hwnd() {
+        crate::pet::win::raise_topmost(h.0 as isize);
+    }
     if mode == "input" {
         let _ = w.set_focus();
     }

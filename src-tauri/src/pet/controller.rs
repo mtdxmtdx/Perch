@@ -11,6 +11,8 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 const TICK: Duration = Duration::from_millis(16);
 const SNAPSHOT_EVERY: Duration = Duration::from_millis(100);
 const FULLSCREEN_EVERY: Duration = Duration::from_millis(400);
+/// 多久检查一次桌宠、气泡、状态标签有没有被别的置顶窗口盖住
+const ZORDER_EVERY: Duration = Duration::from_secs(1);
 /// 宿主窗口静止这么久后才检查脚下是否被遮挡，避免拖窗口时误判
 const HOST_SETTLE: Duration = Duration::from_millis(200);
 /// 以下数值都对应默认大小（高 156px），实际按桌宠高度等比缩放
@@ -60,6 +62,9 @@ struct Ctl {
     /// 桌宠所在显示器上有没有全屏程序（不管设置里要不要因此隐藏，主动聊天也要用）
     fs_now: bool,
     last_fs_check: Instant,
+    last_z_check: Instant,
+    /// 上次盖住桌宠的窗口（同一个只记一次日志）
+    last_cover: String,
     shown: bool,
     anim: &'static str,
     /// 上次告诉前端的水平朝向（1 右，-1 左，0 还没动过）
@@ -114,6 +119,8 @@ impl Ctl {
             fs_hidden: false,
             fs_now: false,
             last_fs_check: Instant::now(),
+            last_z_check: Instant::now(),
+            last_cover: String::new(),
             shown: false,
             anim: "",
             facing: 0.0,
@@ -466,6 +473,10 @@ impl Ctl {
             (head_y, self.fy, w * 0.2, status_size)
         });
         self.follow_status(place);
+        if now - self.last_z_check >= ZORDER_EVERY {
+            self.last_z_check = now;
+            self.keep_on_top(bubble.is_some(), status_size.0 > 0);
+        }
 
         // 朝向跟着水平移动走，停下时保持。先于动画发出，换动画的第一帧朝向就是对的
         let moving = match &self.mode {
@@ -510,6 +521,39 @@ impl Ctl {
         if self.ignore_cursor != Some(!interactive) {
             self.ignore_cursor = Some(!interactive);
             let _ = self.window.set_ignore_cursor_events(!interactive);
+        }
+    }
+
+    /// 桌宠的窗口都是置顶的，但别的置顶窗口（置顶的播放器、截图贴图、别的桌宠等）后激活就会盖在上面；
+    /// 气泡和状态标签一直是隐藏后再显示，层级还停在上次的位置，更容易被盖住。
+    /// 被盖住时按 桌宠 → 状态标签 → 气泡 的顺序提回最上面（气泡在最上面）。用户按着鼠标时不动，免得打断别的程序的操作
+    fn keep_on_top(&mut self, bubble: bool, status: bool) {
+        if win::primary_button_down() {
+            return;
+        }
+        let handle = |label: &str| self.app.get_webview_window(label).and_then(|w| w.hwnd().ok()).map(|h| h.0 as isize).unwrap_or(0);
+        let mut targets = vec![self.hwnd];
+        if status {
+            targets.push(handle(crate::windows::STATUS));
+        }
+        if bubble {
+            targets.push(handle(crate::windows::BUBBLE));
+        }
+        targets.retain(|&h| h != 0);
+        let Some(cover) = targets.iter().find_map(|&t| win::covering_window(t, self.pid)) else {
+            return;
+        };
+        let who = if cover == 0 {
+            "（自己丢了置顶）".to_string()
+        } else {
+            format!("{} {}", win::process_name(win::window_pid(cover)).unwrap_or_default(), win::class_name(cover))
+        };
+        if who != self.last_cover {
+            eprintln!("[pet] 被 {who} 盖住，提回最上面");
+            self.last_cover = who;
+        }
+        for t in targets {
+            win::raise_topmost(t);
         }
     }
 

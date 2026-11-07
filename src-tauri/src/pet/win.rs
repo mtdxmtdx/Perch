@@ -121,6 +121,71 @@ pub fn class_name(raw: isize) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
+/// 把置顶窗口提到所有置顶窗口的最上面（也会补回丢掉的置顶），不抢焦点、不动位置
+pub fn raise_topmost(raw: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE};
+    if raw == 0 {
+        return;
+    }
+    unsafe {
+        let _ = SetWindowPos(hwnd(raw), Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
+}
+
+/// 挡住了也不该抢回来的窗口：菜单、提示、输入法候选、任务栏和它的缩略图、系统弹出界面、
+/// 点得穿的透明浮层（显卡、录屏软件的叠加层）
+pub fn ignorable_cover(class: &str, ex_style: isize) -> bool {
+    const WS_EX_TRANSPARENT: isize = 0x20;
+    if ex_style & WS_EX_TRANSPARENT != 0 {
+        return true;
+    }
+    matches!(
+        class,
+        "#32768"
+            | "tooltips_class32"
+            | "SysShadow"
+            | "ComboLBox"
+            | "DropDown"
+            | "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "TaskListThumbnailWnd"
+            | "NotifyIconOverflowWindow"
+            | "TopLevelWindowForOverflowXamlIsland"
+            | "Windows.UI.Core.CoreWindow"
+            | "Xaml_WindowedPopupClass"
+            | "XamlExplorerHostIslandWindow"
+            | "ForegroundStaging"
+            | "MultitaskingViewFrame"
+    ) || class.contains("IME")
+        || class.contains("Candidate")
+}
+
+/// 挡在 raw 上面、和它有重叠的别的程序的窗口。raw 是置顶窗口时只有别的置顶窗口能盖在上面；
+/// raw 丢了置顶时普通窗口也会盖住它，这时它本身就要补回置顶，返回 Some(0)
+pub fn covering_window(raw: isize, own_pid: u32) -> Option<isize> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_HWNDPREV, WS_EX_TOPMOST};
+    let me = window_rect(raw)?;
+    if ex_style(raw) & WS_EX_TOPMOST.0 as isize == 0 {
+        return Some(0);
+    }
+    let mut cur = hwnd(raw);
+    for _ in 0..1000 {
+        cur = match unsafe { GetWindow(cur, GW_HWNDPREV) } {
+            Ok(h) if !h.is_invalid() => h,
+            _ => return None,
+        };
+        let w = cur.0 as isize;
+        if !is_visible(w) || is_cloaked(w) || window_pid(w) == own_pid || ignorable_cover(&class_name(w), ex_style(w)) {
+            continue;
+        }
+        let Some(r) = frame_bounds(w).or_else(|| window_rect(w)) else { continue };
+        if r.l < me.r && me.l < r.r && r.t < me.b && me.t < r.b {
+            return Some(w);
+        }
+    }
+    None
+}
+
 pub fn window_pid(raw: isize) -> u32 {
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(hwnd(raw), Some(&mut pid)) };
@@ -203,4 +268,21 @@ pub fn monitor_of_window(raw: isize) -> isize {
 
 pub fn monitor_at_point(x: i32, y: i32) -> isize {
     unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST).0 as isize }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ignorable_cover;
+
+    #[test]
+    fn menus_ime_taskbar_and_click_through_overlays_are_not_fought() {
+        for class in ["#32768", "tooltips_class32", "Shell_TrayWnd", "TaskListThumbnailWnd", "MSCTFIME UI", "Microsoft.IME.UIManager.CandidateWindow.Host"] {
+            assert!(ignorable_cover(class, 0), "{class}");
+        }
+        // 点得穿的浮层
+        assert!(ignorable_cover("SomeOverlay", 0x20 | 0x80000));
+        // 普通的置顶窗口要抢回来
+        assert!(!ignorable_cover("WindowsForms10.Window.8.app.0.141b42a_r6_ad1", 0x8));
+        assert!(!ignorable_cover("Chrome_WidgetWin_1", 0x8));
+    }
 }
