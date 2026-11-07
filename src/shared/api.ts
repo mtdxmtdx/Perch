@@ -284,6 +284,12 @@ export interface SettingsView {
 }
 
 /** 保存设置（和试听）时发给后端的内容 */
+export interface UpdateCheck {
+  current: string;
+  newer: boolean;
+  release: { version: string; notes: string; page: string; size: number };
+}
+
 /** 本地 TTS 服务里预置的角色声音 */
 export interface LocalVoice {
   lora: string;
@@ -382,6 +388,9 @@ export const api = {
   memorySave: (id: number | null, kind: string, content: string) => invoke<void>("memory_save", { id, kind, content }),
   memoryDelete: (id: number) => invoke<void>("memory_delete", { id }),
   /** 用还没保存的设置试听一句 */
+  updateCheck: () => invoke<UpdateCheck>("update_check"),
+  updateDownload: () => invoke<string>("update_download"),
+  updateInstall: (path: string) => invoke<void>("update_install", { path }),
   ttsLocalVoices: (url: string) => invoke<LocalVoice[]>("tts_local_voices", { url }),
   ttsTest: (settings: SettingsIn, text: string) =>
     invoke<void>("tts_test", { settings, text }),
