@@ -32,6 +32,7 @@ import {
 } from "../shared/api";
 import { SessionList, useSessions } from "../shared/Sessions";
 import { PRESETS, TTS_VOICES, providerFrom } from "../shared/presets";
+import { shiftTime, zoneShift } from "../shared/timezone";
 import "./settings.css";
 
 interface Draft {
@@ -1870,6 +1871,32 @@ function GeneralTab({ draft, update }: TabProps) {
   useEffect(() => void api.autostartGet().then(setOn), []);
   const zone = draft.timezone;
   const preview = new Date().toLocaleString("zh-CN", { timeZone: zone ?? undefined, dateStyle: "medium", timeStyle: "short", hour12: false });
+  const [shifted, setShifted] = useState<string | null>(null);
+
+  // 换时区时，就寝、免打扰和每日提醒的时刻一起换算，还是原来那个真实时刻（北京 23:00 → 东京 00:00）
+  const changeZone = (next: string | null) => {
+    const minutes = zoneShift(zone, next);
+    const p = draft.proactive;
+    const move = (t: string | null) => (t ? shiftTime(t, minutes) : t);
+    const has = !!(p.bedtime || p.quiet_start || p.quiet_end || p.daily.length);
+    update((d) => ({
+      ...d,
+      timezone: next,
+      proactive: minutes
+        ? { ...d.proactive, bedtime: move(d.proactive.bedtime), quiet_start: move(d.proactive.quiet_start), quiet_end: move(d.proactive.quiet_end), daily: d.proactive.daily.map((x) => ({ ...x, at: shiftTime(x.at, minutes) })) }
+        : d.proactive,
+    }));
+    if (!minutes || !has) {
+      setShifted(null);
+      return;
+    }
+    const list = [
+      p.bedtime && `就寝 ${p.bedtime} → ${shiftTime(p.bedtime, minutes)}`,
+      (p.quiet_start || p.quiet_end) && `免打扰 ${p.quiet_start ?? "?"}～${p.quiet_end ?? "?"} → ${move(p.quiet_start) ?? "?"}～${move(p.quiet_end) ?? "?"}`,
+      ...p.daily.map((x) => `${x.label || "每日提醒"} ${x.at} → ${shiftTime(x.at, minutes)}`),
+    ].filter(Boolean);
+    setShifted(`已把设好的时间换算到新时区：${list.join("；")}。`);
+  };
 
   const toggle = async (v: boolean) => {
     setBusy(true);
@@ -1897,7 +1924,7 @@ function GeneralTab({ draft, update }: TabProps) {
       </section>
       <section>
         <h3>时区</h3>
-        <select value={zone ?? ""} onChange={(e) => update((d) => ({ ...d, timezone: e.target.value || null }))}>
+        <select value={zone ?? ""} onChange={(e) => changeZone(e.target.value || null)}>
           <option value="">跟随系统</option>
           {zone && !TIMEZONES.some(([id]) => id === zone) && <option value={zone}>{zone}</option>}
           {TIMEZONES.map(([id, label]) => (
@@ -1907,8 +1934,10 @@ function GeneralTab({ draft, update }: TabProps) {
           ))}
         </select>
         <p className="muted small">
-          现在是 {preview}。定时提醒、就寝、免打扰时段、节日问候，以及告诉模型的当前时间都按这个时区算；夏令时会自动调整。点「保存」后生效。
+          现在是 {preview}。定时提醒、就寝、免打扰时段、节日问候，以及告诉模型的当前时间都按这个时区算；夏令时会自动调整。
+          换时区时，已经设好的就寝、免打扰和每日提醒的时间会一起换算，还是原来那个时刻。点「保存」后生效。
         </p>
+        {shifted && <p className="small">{shifted}</p>}
       </section>
       <UpdateSection />
     </div>
