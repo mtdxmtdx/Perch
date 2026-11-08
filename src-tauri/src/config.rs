@@ -100,6 +100,8 @@ pub struct TtsParams {
     /// 服务里预置的角色声音（Qwen3TTS 的 LoRA）；选了就不用参考音频
     pub local_lora: Option<String>,
     pub local_speaker: Option<String>,
+    /// 逐句合成：第一句合成好就开始读，对话回复还在生成时也开始读
+    pub split_sentences: bool,
 }
 
 impl Default for TtsParams {
@@ -124,6 +126,7 @@ impl Default for TtsParams {
             local_start_script: None,
             local_lora: None,
             local_speaker: None,
+            split_sentences: true,
         }
     }
 }
