@@ -326,6 +326,19 @@ impl Ctl {
         let (pos, placement) =
             crate::windows::place_bubble((left, top, w as i32, h as i32), self.cx, head_y, size, work);
         if moved || self.bubble_pos != Some(pos) {
+            if self.bubble_pos.is_none() {
+                eprintln!(
+                    "[pet] {} 气泡放在 ({}, {})，大小 {}×{}，{:?}；桌宠脚下 ({:.0}, {:.0})",
+                    crate::logfile::stamp(),
+                    pos.0,
+                    pos.1,
+                    size.0,
+                    size.1,
+                    placement,
+                    self.cx,
+                    self.fy
+                );
+            }
             self.bubble_pos = Some(pos);
             crate::windows::move_bubble(&self.app, pos);
             let anchor = crate::windows::BubbleAnchor {
@@ -586,8 +599,10 @@ impl Ctl {
             let _ = self.window.set_position(PhysicalPosition::new(left, top));
         }
 
-        if let Some((size, moved)) = bubble {
-            self.follow_bubble(left, top, w, h, &metrics, size, moved);
+        match bubble {
+            Some((size, moved)) => self.follow_bubble(left, top, w, h, &metrics, size, moved),
+            // 收起后忘掉位置，下次打开时重新记一行日志
+            None => self.bubble_pos = None,
         }
         let status_size = self.shared.lock().unwrap().status_size;
         let place = (status_size.0 > 0).then(|| {
