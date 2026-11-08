@@ -1545,7 +1545,7 @@ function CompanionTab({ draft, update }: TabProps) {
           {minutesField(p.sedentary_minutes, (v) => set({ sedentary_minutes: v }))}
           <label>
             就寝提醒
-            <div className="small muted">到点后还在用电脑就催你睡觉，到早上 5 点为止，一晚最多 3 次</div>
+            <div className="small muted">到点后还在用电脑就催你睡觉，到早上 5 点为止，一晚最多 3 次。{zoneNote(draft.timezone)}</div>
           </label>
           <div className="reasoning-row" style={{ gridTemplateColumns: "140px auto" }}>
             <input type="time" value={p.bedtime ?? ""} onChange={(e) => set({ bedtime: e.target.value || null })} />
@@ -1605,7 +1605,7 @@ function CompanionTab({ draft, update }: TabProps) {
           </div>
           <label>
             每日提醒
-            <div className="small muted">每天到点提醒一次（到点后 30 分钟内，等到可以开口时说）</div>
+            <div className="small muted">每天到点提醒一次（到点后 30 分钟内，等到可以开口时说）。{zoneNote(draft.timezone)}</div>
           </label>
           <div>
             {p.daily.map((d, i) => (
@@ -1625,7 +1625,7 @@ function CompanionTab({ draft, update }: TabProps) {
         <div className="grid2 params">
           <label>
             免打扰时段
-            <div className="small muted">期间只说重要的提醒；可以跨午夜，比如 23:30～07:30</div>
+            <div className="small muted">期间只说重要的提醒；可以跨午夜，比如 23:30～07:30。{zoneNote(draft.timezone)}</div>
           </label>
           <div className="reasoning-row" style={{ gridTemplateColumns: "120px auto 120px auto" }}>
             <input type="time" value={p.quiet_start ?? ""} onChange={(e) => set({ quiet_start: e.target.value || null })} />
@@ -1820,6 +1820,18 @@ function UpdateSection() {
       {err && <div className="error">{err}</div>}
     </section>
   );
+}
+
+/** 时间设置旁边的说明：这些时间按「常规」里的时区算，并给出那个时区现在几点 */
+function zoneNote(zone: string | null): string {
+  const name = zone ? (TIMEZONES.find(([id]) => id === zone)?.[1] ?? zone) : "跟随电脑";
+  let now = "";
+  try {
+    now = new Date().toLocaleTimeString("zh-CN", { timeZone: zone ?? undefined, hour: "2-digit", minute: "2-digit", hour12: false });
+  } catch {
+    // 时区名不认识时不显示时间
+  }
+  return `按「常规」里的时区算：${name}${now ? `，那里现在 ${now}` : ""}`;
 }
 
 /** 时区选项：名字给程序用，夏令时由程序按时区自动算 */
