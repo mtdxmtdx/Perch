@@ -23,6 +23,7 @@ import {
   type PersonaVoice,
   EMPTY_VOICE,
   type UpdateCheck,
+  type UpdateStatus,
   type VisionProcessRule,
   type AgentsOverview,
   type AgentId,
@@ -1756,67 +1757,71 @@ function ListInput({ value, disabled, onChange }: { value: string[]; disabled?: 
   return <textarea rows={3} value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onBlur={commit} />;
 }
 
-/** 检查更新：只有点按钮时才联网。下载后校验 SHA256，安装时 Perch 会退出，装完自动打开 */
+/** 检查更新：只有点按钮时才联网。下载在后台进行，切到别的标签页或关掉设置不会中断；断了会自动接着下。
+ * 下载后校验 SHA256，安装时 Perch 会退出，装完自动打开 */
 function UpdateSection() {
   const [check, setCheck] = useState<UpdateCheck | null>(null);
-  const [state, setState] = useState<"idle" | "checking" | "downloading" | "installing">("idle");
-  const [progress, setProgress] = useState(0);
+  const [checking, setChecking] = useState(false);
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    const sub = listen<{ done: number; total: number }>("update-progress", (e) => setProgress(e.payload.total ? e.payload.done / e.payload.total : 0));
+    void api.updateStatus().then(setStatus);
+    const sub = listen<UpdateStatus>("update-status", (e) => setStatus(e.payload));
     return () => void sub.then((f) => f());
   }, []);
 
   const runCheck = async () => {
-    setState("checking");
+    setChecking(true);
     setErr(null);
     try {
       setCheck(await api.updateCheck());
     } catch (e) {
       setErr(errorText(e));
     }
-    setState("idle");
-  };
-  const install = async () => {
-    setState("downloading");
-    setProgress(0);
-    setErr(null);
-    try {
-      const path = await api.updateDownload();
-      setState("installing");
-      await api.updateInstall(path);
-    } catch (e) {
-      setErr(errorText(e));
-      setState("idle");
-    }
+    setChecking(false);
   };
 
+  const phase = status?.phase ?? "idle";
+  const busy = phase === "downloading" || phase === "installing";
   const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
+  const pct = status && status.total ? Math.round((status.done / status.total) * 100) : 0;
+  const label =
+    phase === "downloading" ? `下载中 ${pct}%` : phase === "installing" ? "正在安装…" : phase === "error" ? "重试（接着下）" : phase === "ready" ? "已下载" : "下载并安装";
+  // 切回来时检查结果没了，但在下载的话照样显示
+  const showRelease = check?.newer || phase !== "idle";
   return (
     <section>
       <h3>更新</h3>
       <div className="checks">
-        <button disabled={state !== "idle"} onClick={() => void runCheck()}>
-          {state === "checking" ? "检查中…" : "检查更新"}
+        <button disabled={checking || busy} onClick={() => void runCheck()}>
+          {checking ? "检查中…" : "检查更新"}
         </button>
-        {check && !check.newer && <span className="muted small">已经是最新版本（{check.current}）</span>}
+        {check && !check.newer && phase === "idle" && <span className="muted small">已经是最新版本（{check.current}）</span>}
       </div>
-      {check?.newer && (
+      {showRelease && (
         <>
           <p>
-            有新版本 {check.release.version}（当前 {check.current}，{mb(check.release.size)} MB）
+            {check?.newer ? `有新版本 ${check.release.version}（当前 ${check.current}，${mb(check.release.size)} MB）` : `新版本 ${status?.version ?? ""}`}
           </p>
-          <pre className="muted small" style={{ whiteSpace: "pre-wrap", maxHeight: 180, overflow: "auto" }}>
-            {check.release.notes}
-          </pre>
-          <button disabled={state !== "idle"} onClick={() => void install()}>
-            {state === "downloading" ? `下载中 ${Math.round(progress * 100)}%` : state === "installing" ? "正在安装…" : "下载并安装"}
+          {check?.newer && (
+            <pre className="muted small" style={{ whiteSpace: "pre-wrap", maxHeight: 180, overflow: "auto" }}>
+              {check.release.notes}
+            </pre>
+          )}
+          <button disabled={busy || phase === "ready"} onClick={() => void api.updateStart()}>
+            {label}
           </button>
+          {phase === "downloading" && status && status.total > 0 && (
+            <span className="muted small" style={{ marginLeft: 8 }}>
+              {mb(status.done)} / {mb(status.total)} MB，可以切到别的页面，下载不会中断
+            </span>
+          )}
+          {phase === "error" && status?.error && <div className="error">{status.error}</div>}
         </>
       )}
       <p className="muted small">
-        从 GitHub 下载，校验 SHA256 后安装，设置和数据都不变。安装时 Perch 会退出，装完自动打开。只有点按钮时才联网。
+        从 GitHub 下载，校验 SHA256 后安装，设置和数据都不变。网络断了会自动重试，从断开的地方接着下。安装时 Perch 会退出，装完自动打开。只有点按钮时才联网。
       </p>
       {err && <div className="error">{err}</div>}
     </section>

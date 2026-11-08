@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
@@ -37,12 +38,6 @@ pub struct UpdateCheck {
     pub current: String,
     pub newer: bool,
     pub release: Release,
-}
-
-#[derive(Serialize, Clone)]
-struct Progress {
-    done: u64,
-    total: u64,
 }
 
 fn client(app: &AppHandle) -> Result<reqwest::Client, String> {
@@ -115,42 +110,138 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 下载最新的安装包并校验，返回文件路径。下载进度通过 update-progress 事件发给设置页
-pub async fn download(app: &AppHandle) -> Result<String, String> {
+/// 下载和安装进行到哪一步。放在后台，设置页切到别的标签页、关掉再打开都能接着看
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    /// idle / downloading / installing / ready（下载好了，测试时不安装）/ error
+    pub phase: &'static str,
+    pub version: String,
+    pub done: u64,
+    pub total: u64,
+    pub error: Option<String>,
+}
+
+static STATUS: Mutex<Status> = Mutex::new(Status { phase: "idle", version: String::new(), done: 0, total: 0, error: None });
+
+pub fn status() -> Status {
+    STATUS.lock().unwrap().clone()
+}
+
+/// 改状态并通知设置页（update-status 事件）
+fn set_status(app: &AppHandle, f: impl FnOnce(&mut Status)) {
+    let s = {
+        let mut g = STATUS.lock().unwrap();
+        f(&mut g);
+        g.clone()
+    };
+    let _ = app.emit("update-status", s);
+}
+
+/// 开始下载并安装（在后台进行）。已经在下载或安装时不重复开始
+pub fn start(app: &AppHandle) {
+    {
+        let mut g = STATUS.lock().unwrap();
+        if matches!(g.phase, "downloading" | "installing") {
+            return;
+        }
+        *g = Status { phase: "downloading", version: String::new(), done: 0, total: 0, error: None };
+    }
+    set_status(app, |_| {});
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match download(&app).await {
+            // 测试用：设了这个环境变量就只下载、不安装（安装包会关掉并重开装好的那个 Perch）
+            Ok(_) if std::env::var_os("PERCH_UPDATE_NO_INSTALL").is_some() => set_status(&app, |s| s.phase = "ready"),
+            Ok(path) => {
+                set_status(&app, |s| s.phase = "installing");
+                if let Err(e) = install(&app, &path) {
+                    set_status(&app, |s| {
+                        s.phase = "error";
+                        s.error = Some(e);
+                    });
+                }
+            }
+            Err(e) => set_status(&app, |s| {
+                s.phase = "error";
+                s.error = Some(e);
+            }),
+        }
+    });
+}
+
+/// 网络错误的完整原因。reqwest 的说明只有一句 "error sending request for url"，真正的原因（超时、连接被重置、证书……）在 source 里
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        let text = c.to_string();
+        if !out.contains(&text) {
+            out.push_str("：");
+            out.push_str(&text);
+        }
+        cur = c.source();
+    }
+    out
+}
+
+/// 一次下载尝试的失败：retry 为 true 时可以接着重试（网络断了、服务器临时出错）
+struct Failure {
+    message: String,
+    retry: bool,
+}
+
+/// 最多试几次。每次从已经下载的地方接着下（HTTP Range）
+const ATTEMPTS: u32 = 4;
+
+/// 下载最新的安装包并校验，返回文件路径。断了会自动重试，从断开的地方接着下
+async fn download(app: &AppHandle) -> Result<String, String> {
     let release = latest(app).await?;
+    set_status(app, |s| {
+        s.version = release.version.clone();
+        s.total = release.size;
+    });
     let dir = updates_dir();
-    // 旧版本留下的安装包不要了
-    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let part = dir.join(format!("{}.part", release.asset_name));
-    let result = save(app, &release, &part).await;
-    if let Err(e) = result {
+    // 别的版本留下的文件不要了；同一个版本没下完的留着接着下
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if e.path() != part {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let mut last = String::new();
+    for attempt in 1..=ATTEMPTS {
+        match save(app, &release, &part).await {
+            Ok(()) => {
+                last.clear();
+                break;
+            }
+            Err(f) if f.retry && attempt < ATTEMPTS => {
+                eprintln!("[update] 第 {attempt} 次下载没成功，稍后接着下：{}", f.message);
+                last = f.message;
+                tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
+            }
+            Err(f) => {
+                last = f.message;
+                break;
+            }
+        }
+    }
+    if !last.is_empty() {
+        return Err(format!("{last}（试了几次都没成功；再点一次会从断开的地方接着下）"));
+    }
+    // 整个文件下完再校验，对不上就删掉重下
+    let actual = file_sha256(&part)?;
+    if let Err(e) = verify(&actual, &release.sha256) {
         let _ = std::fs::remove_file(&part);
         return Err(e);
     }
     let path = dir.join(&release.asset_name);
     std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
-}
-
-async fn save(app: &AppHandle, release: &Release, path: &Path) -> Result<(), String> {
-    let resp = client(app)?.get(&release.asset_url).send().await.map_err(|e| format!("下载失败：{e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("下载失败：HTTP {}", resp.status().as_u16()));
-    }
-    let total = resp.content_length().unwrap_or(release.size);
-    let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut done = 0u64;
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("下载中断：{e}"))?;
-        hasher.update(&chunk);
-        file.write_all(&chunk).map_err(|e| e.to_string())?;
-        done += chunk.len() as u64;
-        let _ = app.emit("update-progress", Progress { done, total });
-    }
-    verify(&hex(&hasher.finalize()), &release.sha256)
 }
 
 fn verify(actual: &str, expected: &str) -> Result<(), String> {
@@ -161,8 +252,61 @@ fn verify(actual: &str, expected: &str) -> Result<(), String> {
     }
 }
 
+fn file_sha256(path: &Path) -> Result<String, String> {
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut f, &mut hasher).map_err(|e| e.to_string())?;
+    Ok(hex(&hasher.finalize()))
+}
+
+/// 下载一次：part 里已经有内容就用 Range 接着下
+async fn save(app: &AppHandle, release: &Release, part: &Path) -> Result<(), Failure> {
+    let net = |what: &str, e: &reqwest::Error| Failure { message: format!("{what}：{}", error_chain(e)), retry: true };
+    let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
+    if release.size > 0 && have >= release.size {
+        return Ok(()); // 上次已经下完了
+    }
+    let client = client(app).map_err(|e| Failure { message: e, retry: false })?;
+    let mut req = client.get(&release.asset_url);
+    if have > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
+    }
+    let resp = req.send().await.map_err(|e| net("下载失败", &e))?;
+    let code = resp.status();
+    if !code.is_success() {
+        // 5xx 和 429 是服务器临时的问题，可以重试；其他（404、403）重试也没用
+        let retry = code.is_server_error() || code.as_u16() == 429;
+        return Err(Failure { message: format!("下载失败：HTTP {}", code.as_u16()), retry });
+    }
+    // 服务器不支持接着下时会返回完整的文件（200），从头写
+    let resume = have > 0 && code.as_u16() == 206;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(resume)
+        .truncate(!resume)
+        .open(part)
+        .map_err(|e| Failure { message: e.to_string(), retry: false })?;
+    let mut done = if resume { have } else { 0 };
+    let total = release.size.max(done + resp.content_length().unwrap_or(0));
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| net("下载中断", &e))?;
+        file.write_all(&chunk).map_err(|e| Failure { message: e.to_string(), retry: false })?;
+        done += chunk.len() as u64;
+        set_status(app, |s| {
+            s.done = done;
+            s.total = total;
+        });
+    }
+    if release.size > 0 && done < release.size {
+        return Err(Failure { message: format!("下载中断：只收到 {done} / {} 字节", release.size), retry: true });
+    }
+    Ok(())
+}
+
 /// 运行下载好的安装包并退出 Perch。安装包不弹向导，装到原来的位置，装完重新打开 Perch
-pub fn install(app: &AppHandle, path: &str) -> Result<(), String> {
+fn install(app: &AppHandle, path: &str) -> Result<(), String> {
     let path = Path::new(path);
     let inside = path.canonicalize().ok().zip(updates_dir().canonicalize().ok()).is_some_and(|(p, d)| p.starts_with(d));
     let is_installer = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(ASSET_SUFFIX));
@@ -217,6 +361,34 @@ mod tests {
         v["assets"].as_array_mut().unwrap().remove(1);
         assert!(parse_release(&v).unwrap_err().contains("安装包"));
         assert!(parse_release(&serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn network_errors_keep_the_real_cause() {
+        #[derive(Debug)]
+        struct Outer(std::io::Error);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "error sending request for url")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let e = Outer(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "连接被重置"));
+        assert_eq!(error_chain(&e), "error sending request for url：连接被重置");
+    }
+
+    #[test]
+    fn hashes_a_file_on_disk() {
+        let dir = std::env::temp_dir().join(format!("perch-upd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.bin");
+        std::fs::write(&f, b"abc").unwrap();
+        assert_eq!(file_sha256(&f).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
