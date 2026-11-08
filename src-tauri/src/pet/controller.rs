@@ -73,6 +73,12 @@ struct Ctl {
     fs_origin: Option<(String, f64)>,
     /// 原来那块屏不再全屏的时刻
     fs_clear_since: Option<Instant>,
+    /// 正在全屏的那块屏（句柄）：随机跳的时候不往那边跳，掉落时也不落在那边
+    fs_block: Option<isize>,
+    /// 上次检查到的全屏状态（调试日志用）
+    fs_last: FsMon,
+    /// 正在跳往这块屏（设备名）和起跳时刻：飞越屏幕之间的空隙时不拦，只落在那块屏上
+    transfer: Option<(String, Instant)>,
     /// 活动范围：只在这块显示器上（设备名）；None 所有显示器
     scope: Option<String>,
     /// 上次写进配置文件的位置
@@ -139,6 +145,9 @@ impl Ctl {
             fs_any: false,
             fs_origin: None,
             fs_clear_since: None,
+            fs_block: None,
+            fs_last: FsMon::None,
+            transfer: None,
             scope: None,
             saved_place: None,
             last_place_check: Instant::now(),
@@ -207,10 +216,38 @@ impl Ctl {
         }
     }
 
-    /// 掉落时能不能落在这段面上：限定了显示器时只落在那块屏里的面
+    /// 能不能落在（跳到）这段面上：
+    /// 限定了显示器时只在那块屏；正在全屏的那块屏不去；跳往别的屏的途中只落在目标屏上
     fn interval_allowed(&self, iv: &Interval) -> bool {
-        self.scope.is_none()
-            || screens::at_or_nearest(&self.snap.monitors, (iv.x1 + iv.x2) / 2.0, iv.y).is_some_and(|m| self.allowed(m))
+        let Some(m) = screens::at_or_nearest(&self.snap.monitors, (iv.x1 + iv.x2) / 2.0, iv.y) else { return true };
+        if self.transfer.as_ref().is_some_and(|(name, _)| *name != m.name) {
+            return false;
+        }
+        if self.fs_block == Some(m.handle) {
+            return false;
+        }
+        self.scope.is_none() || self.allowed(m)
+    }
+
+    /// 跳到另一块屏的任务栏上（横向位置 ratio）。全屏换屏、全屏结束跳回去时用
+    fn plan_transfer(&self, m: &Monitor, ratio: f64, k: f64, w: f64, h: f64) -> (f64, f64) {
+        let tx = screens::x_at(m, ratio, w * 0.4);
+        let ty = m.work.b as f64;
+        let here_top = self.feet_monitor().map(|f| f.full.t).unwrap_or(m.full.t) as f64;
+        let ceiling = here_top.max(m.full.t as f64) + h + 4.0;
+        // 跳得比两边都高一些，越过屏幕之间的落差
+        let apex = (self.fy.min(ty) - (180.0 + fastrand::f64() * 80.0) * k).max(ceiling).min(self.fy.min(ty) - 20.0 * k);
+        let g = GRAVITY * k;
+        let vy = -(2.0 * g * (self.fy - apex).max(1.0)).sqrt();
+        let t = -vy / g + (2.0 * (ty - apex).max(1.0) / g).sqrt();
+        ((tx - self.cx) / t, vy)
+    }
+
+    /// 起跳去另一块屏：落地前不拦在屏幕空隙里，只落在那块屏上
+    fn jump_to(&mut self, m: &Monitor, ratio: f64, k: f64, w: f64, h: f64) {
+        let (vx, vy) = self.plan_transfer(m, ratio, k, w, h);
+        self.transfer = Some((m.name.clone(), Instant::now()));
+        self.mode = Mode::Air { vx, vy };
     }
 
     fn grounded(&self, iv: &Interval, act: Act, dur: Duration) -> Mode {
@@ -256,7 +293,14 @@ impl Ctl {
 
     /// 掉出所有可站面时（比如显示器之间的缝隙），落到最近那块（能去的）显示器的任务栏上
     fn fallback_landing(&mut self) -> Option<Interval> {
-        let m = screens::at_or_nearest(self.allowed_monitors(), self.cx, self.fy)?.clone();
+        let candidates: Vec<&Monitor> = match &self.transfer {
+            Some((name, _)) => self.snap.monitors.iter().filter(|m| &m.name == name).collect(),
+            None => {
+                let free: Vec<&Monitor> = self.allowed_monitors().into_iter().filter(|m| self.fs_block != Some(m.handle)).collect();
+                if free.is_empty() { self.allowed_monitors() } else { free }
+            }
+        };
+        let m = screens::at_or_nearest(candidates, self.cx, self.fy)?.clone();
         if self.fy < m.work.b as f64 {
             return None;
         }
@@ -458,24 +502,36 @@ impl Ctl {
         if now - self.last_fs_check >= FULLSCREEN_EVERY {
             self.last_fs_check = now;
             let fs = fullscreen::fullscreen_monitor(self.pid);
+            if self.debug && fs != self.fs_last {
+                eprintln!("[pet] 全屏状态 {:?} -> {fs:?} {}", self.fs_last, fullscreen::describe_foreground());
+            }
+            self.fs_last = fs;
+            // 有一块屏在全屏：随机跳的时候不往那边去（跳过去只会被藏起来）
+            self.fs_block = match fs {
+                FsMon::Mon(m) => Some(m),
+                _ => None,
+            };
             let here = self.feet_monitor().map(|m| m.handle).unwrap_or(0);
-            let mut fs_here = fs.covers(here);
-            // 所在的屏全屏了：换到一块没在全屏的屏上（能去的话），不用隐藏
+            let mut fs_here = fs.covers(here) && self.transfer.is_none();
+            let grounded = matches!(self.mode, Mode::Grounded { .. });
+            // 所在的屏全屏了：跳到一块没在全屏的屏上（能去的话），不用隐藏。还在空中时等落地再跳，这期间也先不藏
             if fs_here && fs_switch && !matches!(self.mode, Mode::Drag { .. }) {
                 let target = self.allowed_monitors().into_iter().find(|m| !fs.covers(m.handle)).cloned();
                 if let Some(t) = target {
-                    if self.fs_origin.is_none() {
-                        self.fs_origin = self.place();
+                    if grounded {
+                        if self.fs_origin.is_none() {
+                            self.fs_origin = self.place();
+                        }
+                        let ratio = self.fs_origin.as_ref().map(|o| o.1).unwrap_or(0.5);
+                        if self.debug {
+                            eprintln!("[pet] 所在显示器全屏，跳到 {}", t.name);
+                        }
+                        self.jump_to(&t, ratio, k, w, h);
                     }
-                    let ratio = self.fs_origin.as_ref().map(|o| o.1).unwrap_or(0.5);
-                    if self.debug {
-                        eprintln!("[pet] 所在显示器全屏，换到 {}", t.name);
-                    }
-                    self.drop_onto(&t, ratio, k);
                     fs_here = false;
                 }
             }
-            // 原来那块屏不再全屏一段时间后，回去
+            // 原来那块屏不再全屏一段时间后，站稳了再跳回去
             if let Some((name, ratio)) = self.fs_origin.clone() {
                 let origin = self.snap.monitors.iter().find(|m| m.name == name).cloned();
                 let busy = origin.as_ref().is_some_and(|m| fs.covers(m.handle));
@@ -483,9 +539,15 @@ impl Ctl {
                     self.fs_clear_since = None;
                 } else {
                     let since = *self.fs_clear_since.get_or_insert(now);
-                    if now - since >= FS_RETURN_AFTER || !fs_switch {
+                    if (now - since >= FS_RETURN_AFTER || !fs_switch) && grounded && self.transfer.is_none() {
                         if let Some(m) = origin.filter(|m| self.allowed(m)) {
-                            self.drop_onto(&m, ratio, k);
+                            let here_name = self.feet_monitor().map(|f| f.name.clone());
+                            if here_name.as_deref() != Some(m.name.as_str()) {
+                                if self.debug {
+                                    eprintln!("[pet] 全屏结束，跳回 {}", m.name);
+                                }
+                                self.jump_to(&m, ratio, k, w, h);
+                            }
                         }
                         self.fs_origin = None;
                         self.fs_clear_since = None;
@@ -573,6 +635,7 @@ impl Ctl {
                 self.press = None;
                 // 用户自己挪了，就不再「全屏结束后回原来那块屏」
                 self.fs_origin = None;
+                self.transfer = None;
                 self.mode = Mode::Drag {
                     gx: px as f64 - self.cx,
                     gy: py as f64 - self.fy,
@@ -732,12 +795,24 @@ impl Ctl {
         self.cx += vx * dt;
         self.fy += vy * dt;
 
-        // 只能待在真实存在的（能去的）屏幕区域里：几块屏大小不一时中间的空隙、限定显示器时别的屏，都当墙
+        // 跳往别的屏太久还没落地（被挡住了之类）：恢复正常
+        if self.transfer.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(4)) {
+            self.transfer = None;
+        }
+        // 只能待在真实存在的（能去的）屏幕区域里：几块屏大小不一时中间的空隙、限定显示器时别的屏，都当墙。
+        // 跳往别的屏的途中不拦，只是不出所有屏的外接范围
         let half = w * 0.5;
         let body = self.fy - h * 0.5;
         let allowed: Vec<Monitor> = self.allowed_monitors().into_iter().cloned().collect();
         let inside = |x: f64, y: f64| allowed.iter().any(|m| screens::contains(m, x, y));
-        if !inside(self.cx, body) {
+        if self.transfer.is_some() {
+            let vs = win::virtual_screen();
+            self.cx = self.cx.clamp(vs.l as f64 + half, vs.r as f64 - half);
+            if self.fy - h < vs.t as f64 {
+                self.fy = vs.t as f64 + h;
+                vy = vy.max(0.0);
+            }
+        } else if !inside(self.cx, body) {
             if let Some(m) = screens::at_or_nearest(&allowed, self.cx, body) {
                 let (x, y, hit_x, hit_y) = screens::clamp_into(m, self.cx, self.fy, half, h);
                 if hit_x {
@@ -768,6 +843,7 @@ impl Ctl {
         if vy > 0.0 {
             if let Some(iv) = self.landing(prev).or_else(|| self.fallback_landing()) {
                 self.fy = iv.y;
+                self.transfer = None;
                 return self.grounded(&iv, Act::Land, Duration::from_millis(350));
             }
         }
