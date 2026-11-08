@@ -50,6 +50,35 @@ pub fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let persona_refs: Vec<&dyn IsMenuItem<Wry>> = persona_items.iter().map(|i| i as &dyn IsMenuItem<Wry>).collect();
     let personas = Submenu::with_items(app, "人格", true, &persona_refs)?;
 
+    // 多块显示器时：活动范围、移到哪块屏、全屏时换屏
+    let mut mons = crate::pet::win::monitors();
+    mons.sort_by_key(|m| (crate::pet::screens::number(&m.name).unwrap_or(99), m.full.l));
+    let scope = cfg.pet_screen.as_deref().filter(|s| mons.iter().any(|m| m.name == *s));
+    let mut screen_items: Vec<Box<dyn IsMenuItem<Wry>>> = Vec::new();
+    if mons.len() > 1 {
+        screen_items.push(Box::new(CheckMenuItem::with_id(app, "screen:all", "在所有显示器上活动", true, scope.is_none(), None::<&str>)?));
+        for (i, m) in mons.iter().enumerate() {
+            let label = format!("只在{}", crate::pet::screens::label(m, i));
+            screen_items.push(Box::new(CheckMenuItem::with_id(app, format!("screen:only:{}", m.name), label, true, scope == Some(m.name.as_str()), None::<&str>)?));
+        }
+        screen_items.push(Box::new(PredefinedMenuItem::separator(app)?));
+        for (i, m) in mons.iter().enumerate() {
+            let label = format!("移到{}", crate::pet::screens::label(m, i));
+            screen_items.push(Box::new(MenuItem::with_id(app, format!("screen:move:{}", m.name), label, true, None::<&str>)?));
+        }
+        screen_items.push(Box::new(PredefinedMenuItem::separator(app)?));
+        screen_items.push(Box::new(CheckMenuItem::with_id(
+            app,
+            "fs_switch",
+            "全屏时换到别的显示器（不隐藏）",
+            true,
+            cfg.fullscreen_switch,
+            None::<&str>,
+        )?));
+    }
+    let screen_refs: Vec<&dyn IsMenuItem<Wry>> = screen_items.iter().map(|i| i.as_ref()).collect();
+    let screens = Submenu::with_items(app, "显示器", mons.len() > 1, &screen_refs)?;
+
     Menu::with_items(
         app,
         &[
@@ -61,6 +90,7 @@ pub fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &PredefinedMenuItem::separator(app)?,
             &skins,
             &scales,
+            &screens,
             &MenuItem::with_id(app, "reset_pos", "放回任务栏", true, None::<&str>)?,
             &MenuItem::with_id(app, "toggle_visible", if user_hidden { "显示桌宠" } else { "隐藏桌宠" }, true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
@@ -130,6 +160,23 @@ pub fn after_skin_import(app: &AppHandle, entry: &skin::SkinEntry, apply: bool) 
     refresh_menu(app);
 }
 
+/// 活动范围：None 所有显示器；Some 只在这块屏（不在那块屏的话控制线程会把它挪过去）
+fn set_screen_scope(app: &AppHandle, scope: Option<String>, move_now: bool) {
+    let state = app.state::<AppState>();
+    let mut cfg = state.config.lock().unwrap();
+    cfg.pet_screen = scope.clone();
+    config::save(&cfg);
+    drop(cfg);
+    let mut s = state.shared.lock().unwrap();
+    if move_now {
+        s.user_hidden = false;
+        s.move_to = scope.clone();
+    }
+    s.screen_scope = scope;
+    drop(s);
+    refresh_menu(app);
+}
+
 pub fn refresh_menu(app: &AppHandle) {
     if let (Some(tray), Ok(menu)) = (app.tray_by_id("main"), build_menu(app)) {
         let _ = tray.set_menu(Some(menu));
@@ -171,6 +218,13 @@ pub fn handle(app: &AppHandle, id: &str) {
             }
             config::save(&cfg);
         }
+        "fs_switch" => {
+            let mut cfg = state.config.lock().unwrap();
+            cfg.fullscreen_switch = !cfg.fullscreen_switch;
+            state.shared.lock().unwrap().fs_switch = cfg.fullscreen_switch;
+            config::save(&cfg);
+        }
+        "screen:all" => set_screen_scope(app, None, false),
         "toggle_visible" => {
             let mut s = state.shared.lock().unwrap();
             s.user_hidden = !s.user_hidden;
@@ -185,7 +239,21 @@ pub fn handle(app: &AppHandle, id: &str) {
         "open_settings" => crate::windows::open_settings(app),
         "skin_import" => import_from_tray(app),
         _ => {
-            if let Some(pid) = id.strip_prefix("persona:") {
+            if let Some(name) = id.strip_prefix("screen:only:") {
+                set_screen_scope(app, Some(name.to_string()), false);
+                return;
+            } else if let Some(name) = id.strip_prefix("screen:move:") {
+                // 限定了别的屏时，移过去就改成限定在这块屏
+                let scoped_elsewhere = state.shared.lock().unwrap().screen_scope.as_deref().is_some_and(|s| s != name);
+                if scoped_elsewhere {
+                    set_screen_scope(app, Some(name.to_string()), true);
+                } else {
+                    let mut s = state.shared.lock().unwrap();
+                    s.user_hidden = false;
+                    s.move_to = Some(name.to_string());
+                }
+                return;
+            } else if let Some(pid) = id.strip_prefix("persona:") {
                 crate::commands::activate_persona(app, pid);
                 return;
             } else if let Some(path) = id.strip_prefix("skin:") {
