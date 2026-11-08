@@ -1,9 +1,10 @@
 //! 桌宠控制线程（约 60Hz）：物理、自主行为、拖拽、鼠标穿透、全屏隐藏。
 //! 位置用"身体中心 x + 脚底 y"（物理像素）表示，每帧换算成窗口左上角。
 
+use super::fullscreen::FsMon;
 use super::surfaces::{self, Interval, Snapshot};
-use super::win::{self, Rect};
-use super::{fullscreen, hittest, SharedState};
+use super::win::{self, Monitor, Rect};
+use super::{fullscreen, hittest, screens, SharedState};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
@@ -13,6 +14,10 @@ const SNAPSHOT_EVERY: Duration = Duration::from_millis(100);
 const FULLSCREEN_EVERY: Duration = Duration::from_millis(400);
 /// 多久检查一次桌宠、气泡、状态标签有没有被别的置顶窗口盖住
 const ZORDER_EVERY: Duration = Duration::from_secs(1);
+/// 全屏结束这么久后才回原来那块屏（切出游戏又切回去时不来回跳）
+const FS_RETURN_AFTER: Duration = Duration::from_secs(5);
+/// 记下的位置变了以后，最快多久写一次配置文件
+const PLACE_SAVE_EVERY: Duration = Duration::from_secs(30);
 /// 宿主窗口静止这么久后才检查脚下是否被遮挡，避免拖窗口时误判
 const HOST_SETTLE: Duration = Duration::from_millis(200);
 /// 以下数值都对应默认大小（高 156px），实际按桌宠高度等比缩放
@@ -62,6 +67,18 @@ struct Ctl {
     /// 桌宠所在显示器上有没有全屏程序（不管设置里要不要因此隐藏，主动聊天也要用）
     fs_now: bool,
     last_fs_check: Instant,
+    /// 有没有哪块屏在全屏（桌宠因此换了屏时，主动聊天照样要安静）
+    fs_any: bool,
+    /// 因为全屏换了屏：原来在哪块屏、横向位置；全屏结束后回去
+    fs_origin: Option<(String, f64)>,
+    /// 原来那块屏不再全屏的时刻
+    fs_clear_since: Option<Instant>,
+    /// 活动范围：只在这块显示器上（设备名）；None 所有显示器
+    scope: Option<String>,
+    /// 上次写进配置文件的位置
+    saved_place: Option<(String, f64)>,
+    last_place_check: Instant,
+    last_place_save: Instant,
     last_z_check: Instant,
     /// 上次盖住桌宠的窗口（同一个只记一次日志）
     last_cover: String,
@@ -119,6 +136,13 @@ impl Ctl {
             fs_hidden: false,
             fs_now: false,
             last_fs_check: Instant::now(),
+            fs_any: false,
+            fs_origin: None,
+            fs_clear_since: None,
+            scope: None,
+            saved_place: None,
+            last_place_check: Instant::now(),
+            last_place_save: Instant::now(),
             last_z_check: Instant::now(),
             last_cover: String::new(),
             shown: false,
@@ -135,22 +159,58 @@ impl Ctl {
             force_sit: std::env::var_os("PERCH_DEBUG_SIT").is_some(),
             last_debug: Instant::now(),
         };
-        ctl.place_initial(1.0);
+        ctl.scope = ctl.shared.lock().unwrap().screen_scope.clone();
+        ctl.place_initial(1.0, true);
         ctl
     }
 
-    /// 从主显示器中间偏下的位置掉下来
-    fn place_initial(&mut self, k: f64) {
-        let mons = &self.snap.monitors;
-        let m = mons
-            .iter()
-            .find(|m| m.full.l <= 0 && m.full.r > 0 && m.full.t <= 0 && m.full.b > 0)
-            .or(mons.first());
-        if let Some(m) = m {
-            self.cx = (m.work.l + m.work.r) as f64 / 2.0;
-            self.fy = m.work.b as f64 - 260.0 * k;
+    /// 能去的显示器：限定了某一块（而且它还接着）就只有它
+    fn allowed_monitors(&self) -> Vec<&Monitor> {
+        let all = self.snap.monitors.iter();
+        match &self.scope {
+            Some(name) if self.snap.monitors.iter().any(|m| &m.name == name) => all.filter(|m| &m.name == name).collect(),
+            _ => all.collect(),
         }
+    }
+
+    fn allowed(&self, m: &Monitor) -> bool {
+        self.allowed_monitors().iter().any(|a| a.name == m.name)
+    }
+
+    /// 脚下这块屏（不在任何屏里时取最近的）
+    fn feet_monitor(&self) -> Option<&Monitor> {
+        screens::at_or_nearest(&self.snap.monitors, self.cx, self.fy - 1.0)
+    }
+
+    /// 现在在哪块屏、横向位置
+    fn place(&self) -> Option<(String, f64)> {
+        self.feet_monitor().map(|m| (m.name.clone(), screens::x_ratio(m, self.cx)))
+    }
+
+    /// 从这块屏的上方掉下来，横向放在 ratio 处
+    fn drop_onto(&mut self, m: &Monitor, ratio: f64, k: f64) {
+        self.cx = screens::x_at(m, ratio, 60.0 * k);
+        self.fy = m.work.b as f64 - 260.0 * k;
         self.mode = Mode::Air { vx: 0.0, vy: 0.0 };
+    }
+
+    /// 启动时（use_saved）回到上次待的地方；「放回任务栏」时落到主屏中间。限定了显示器时只在那块屏
+    fn place_initial(&mut self, k: f64, use_saved: bool) {
+        let saved = if use_saved { self.app.state::<crate::AppState>().config.lock().unwrap().pet_place.clone() } else { None };
+        let allowed: Vec<Monitor> = self.allowed_monitors().into_iter().cloned().collect();
+        let target = saved
+            .and_then(|p| allowed.iter().find(|m| m.name == p.screen).map(|m| (m.clone(), p.x)))
+            .or_else(|| allowed.iter().find(|m| m.primary).or(allowed.first()).map(|m| (m.clone(), 0.5)));
+        match target {
+            Some((m, ratio)) => self.drop_onto(&m, ratio, k),
+            None => self.mode = Mode::Air { vx: 0.0, vy: 0.0 },
+        }
+    }
+
+    /// 掉落时能不能落在这段面上：限定了显示器时只落在那块屏里的面
+    fn interval_allowed(&self, iv: &Interval) -> bool {
+        self.scope.is_none()
+            || screens::at_or_nearest(&self.snap.monitors, (iv.x1 + iv.x2) / 2.0, iv.y).is_some_and(|m| self.allowed(m))
     }
 
     fn grounded(&self, iv: &Interval, act: Act, dur: Duration) -> Mode {
@@ -180,11 +240,7 @@ impl Ctl {
     }
 
     fn work_bounds(&self) -> Option<(f64, f64, f64)> {
-        self.snap
-            .monitors
-            .iter()
-            .find(|m| m.work.contains_x(self.cx))
-            .map(|m| (m.work.l as f64, m.work.r as f64, m.work.b as f64))
+        self.feet_monitor().map(|m| (m.work.l as f64, m.work.r as f64, m.work.b as f64))
     }
 
     /// 本帧下落时穿过的最高可站面
@@ -193,27 +249,14 @@ impl Ctl {
             .intervals
             .iter()
             .filter(|iv| prev_fy <= iv.y + 0.5 && self.fy >= iv.y && self.cx >= iv.x1 && self.cx <= iv.x2)
+            .filter(|iv| self.interval_allowed(iv))
             .min_by(|a, b| a.y.total_cmp(&b.y))
             .copied()
     }
 
-    /// 掉出所有可站面时（比如显示器之间的缝隙），落到最近显示器的任务栏上
+    /// 掉出所有可站面时（比如显示器之间的缝隙），落到最近那块（能去的）显示器的任务栏上
     fn fallback_landing(&mut self) -> Option<Interval> {
-        let m = self
-            .snap
-            .monitors
-            .iter()
-            .min_by_key(|m| {
-                let d = if self.cx < m.work.l as f64 {
-                    m.work.l as f64 - self.cx
-                } else if self.cx > m.work.r as f64 {
-                    self.cx - m.work.r as f64
-                } else {
-                    0.0
-                };
-                d as i64
-            })?
-            .clone();
+        let m = screens::at_or_nearest(self.allowed_monitors(), self.cx, self.fy)?.clone();
         if self.fy < m.work.b as f64 {
             return None;
         }
@@ -227,6 +270,7 @@ impl Ctl {
             .intervals
             .iter()
             .filter(|iv| self.cx >= iv.x1 && self.cx <= iv.x2 && self.fy >= iv.y - 2.0 && self.fy - iv.y <= h * 0.3)
+            .filter(|iv| self.interval_allowed(iv))
             .min_by(|a, b| (self.fy - a.y).total_cmp(&(self.fy - b.y)))
             .copied()
     }
@@ -234,12 +278,13 @@ impl Ctl {
     /// 随机挑一个够得着的面，算出起跳速度
     fn plan_jump(&self, k: f64, w: f64, h: f64) -> Option<(f64, f64)> {
         let margin = w * 0.35;
-        // 头不能顶出屏幕：最高点的脚底至少比屏幕顶低一个身高
-        let ceiling = win::virtual_screen().t as f64 + h + 4.0;
-        let cands: Vec<(f64, f64)> = self
+        // 头不能顶出屏幕：最高点的脚底至少比起跳和落脚那两块屏的顶低一个身高
+        let here_top = self.feet_monitor().map(|m| m.full.t).unwrap_or(0) as f64;
+        let cands: Vec<(f64, f64, f64)> = self
             .snap
             .intervals
             .iter()
+            .filter(|iv| self.interval_allowed(iv))
             .filter_map(|iv| {
                 if iv.x2 - iv.x1 < 2.0 * margin + 10.0 {
                     return None;
@@ -248,17 +293,19 @@ impl Ctl {
                     return None;
                 }
                 let tx = iv.x1 + margin + fastrand::f64() * (iv.x2 - iv.x1 - 2.0 * margin);
+                let there_top = screens::at_or_nearest(&self.snap.monitors, tx, iv.y).map(|m| m.full.t).unwrap_or(0) as f64;
+                let ceiling = here_top.max(there_top) + h + 4.0;
                 let dx = (tx - self.cx).abs();
                 let rise = self.fy - iv.y;
                 let ok = iv.y - ceiling >= 20.0 * k
                     && dx >= 60.0 * k && dx <= MAX_JUMP_DX * k && rise <= MAX_JUMP_RISE * k && rise >= -1600.0 * k;
-                ok.then_some((tx, iv.y))
+                ok.then_some((tx, iv.y, ceiling))
             })
             .collect();
         if cands.is_empty() {
             return None;
         }
-        let (tx, ty) = cands[fastrand::usize(..cands.len())];
+        let (tx, ty, ceiling) = cands[fastrand::usize(..cands.len())];
         let g = GRAVITY * k;
         let apex = (self.fy.min(ty) - (70.0 + fastrand::f64() * 60.0) * k).max(ceiling);
         let vy = -(2.0 * g * (self.fy - apex)).sqrt();
@@ -273,11 +320,7 @@ impl Ctl {
         }
         let head_y = top as f64 + m.top_ratio * h;
         let work = self
-            .snap
-            .monitors
-            .iter()
-            .find(|mon| mon.full.contains_x(self.cx))
-            .or(self.snap.monitors.first())
+            .feet_monitor()
             .map(|mon| (mon.work.l, mon.work.t, mon.work.r, mon.work.b))
             .unwrap_or((0, 0, 1920, 1080));
         let (pos, placement) =
@@ -376,13 +419,71 @@ impl Ctl {
             }
         }
 
+        // 活动范围和「移到显示器 N」
+        let (scope, move_to, fs_switch) = {
+            let mut s = self.shared.lock().unwrap();
+            (s.screen_scope.clone(), s.move_to.take(), s.fs_switch)
+        };
+        self.scope = scope;
+        if let Some(name) = move_to {
+            if let Some(m) = self.snap.monitors.iter().find(|m| m.name == name).cloned() {
+                let ratio = self.feet_monitor().map(|f| screens::x_ratio(f, self.cx)).unwrap_or(0.5);
+                self.fs_origin = None;
+                self.drop_onto(&m, ratio, k);
+            }
+        } else if self.scope.is_some() && !matches!(self.mode, Mode::Drag { .. }) {
+            // 限定了显示器、桌宠却在别的屏上（刚改了范围）：挪过去
+            let outside = self.feet_monitor().is_some_and(|m| !self.allowed(m));
+            if outside {
+                let ratio = self.feet_monitor().map(|f| screens::x_ratio(f, self.cx)).unwrap_or(0.5);
+                if let Some(m) = self.allowed_monitors().first().map(|m| (*m).clone()) {
+                    self.drop_onto(&m, ratio, k);
+                }
+            }
+        }
+
         if now - self.last_fs_check >= FULLSCREEN_EVERY {
             self.last_fs_check = now;
-            let fs = fullscreen::is_fullscreen_at(self.cx as i32, self.fy as i32 - 1, self.pid);
-            if self.debug && fs != self.fs_now {
-                eprintln!("[pet] fullscreen={fs} pet_mon={:x} {}", win::monitor_at_point(self.cx as i32, self.fy as i32 - 1), fullscreen::describe_foreground());
+            let fs = fullscreen::fullscreen_monitor(self.pid);
+            let here = self.feet_monitor().map(|m| m.handle).unwrap_or(0);
+            let mut fs_here = fs.covers(here);
+            // 所在的屏全屏了：换到一块没在全屏的屏上（能去的话），不用隐藏
+            if fs_here && fs_switch && !matches!(self.mode, Mode::Drag { .. }) {
+                let target = self.allowed_monitors().into_iter().find(|m| !fs.covers(m.handle)).cloned();
+                if let Some(t) = target {
+                    if self.fs_origin.is_none() {
+                        self.fs_origin = self.place();
+                    }
+                    let ratio = self.fs_origin.as_ref().map(|o| o.1).unwrap_or(0.5);
+                    if self.debug {
+                        eprintln!("[pet] 所在显示器全屏，换到 {}", t.name);
+                    }
+                    self.drop_onto(&t, ratio, k);
+                    fs_here = false;
+                }
             }
-            self.fs_now = fs;
+            // 原来那块屏不再全屏一段时间后，回去
+            if let Some((name, ratio)) = self.fs_origin.clone() {
+                let origin = self.snap.monitors.iter().find(|m| m.name == name).cloned();
+                let busy = origin.as_ref().is_some_and(|m| fs.covers(m.handle));
+                if busy && fs_switch {
+                    self.fs_clear_since = None;
+                } else {
+                    let since = *self.fs_clear_since.get_or_insert(now);
+                    if now - since >= FS_RETURN_AFTER || !fs_switch {
+                        if let Some(m) = origin.filter(|m| self.allowed(m)) {
+                            self.drop_onto(&m, ratio, k);
+                        }
+                        self.fs_origin = None;
+                        self.fs_clear_since = None;
+                    }
+                }
+            }
+            if self.debug && fs_here != self.fs_now {
+                eprintln!("[pet] fullscreen={fs_here} {fs:?} pet_mon={here:x} {}", fullscreen::describe_foreground());
+            }
+            self.fs_now = fs_here;
+            self.fs_any = fs != FsMon::None;
         }
         self.fs_hidden = hide_fs && self.fs_now;
         // 只在启动时 show 一次；之后的隐藏是把窗口挪到屏幕外。
@@ -403,7 +504,8 @@ impl Ctl {
         {
             let mut s = self.shared.lock().unwrap();
             s.pet_hidden = hidden;
-            s.fullscreen = self.fs_now;
+            // 因为全屏换了屏时，用户还在全屏里，主动聊天照样要安静
+            s.fullscreen = self.fs_now || (self.fs_origin.is_some() && self.fs_any);
         }
         if hidden {
             self.press = None;
@@ -423,7 +525,26 @@ impl Ctl {
         }
 
         if reset {
-            self.place_initial(k);
+            self.fs_origin = None;
+            self.place_initial(k, false);
+        }
+
+        // 记下在哪块屏：退出时写进配置；变了的话最多 30 秒写一次，防止没正常退出时丢掉
+        if now - self.last_place_check >= Duration::from_secs(2) && matches!(self.mode, Mode::Grounded { .. }) {
+            self.last_place_check = now;
+            // 因为全屏临时换了屏时，记的是原来那块
+            if let Some(place) = self.fs_origin.clone().or_else(|| self.place()) {
+                self.shared.lock().unwrap().place = Some(place.clone());
+                let changed = self.saved_place.as_ref().is_none_or(|(n, x)| *n != place.0 || (x - place.1).abs() > 0.05);
+                if changed && now - self.last_place_save >= PLACE_SAVE_EVERY {
+                    self.last_place_save = now;
+                    let state = self.app.state::<crate::AppState>();
+                    let mut cfg = state.config.lock().unwrap();
+                    cfg.pet_place = Some(crate::config::PetPlace { screen: place.0.clone(), x: place.1 });
+                    crate::config::save(&cfg);
+                    self.saved_place = Some(place);
+                }
+            }
         }
 
         // 区分单击和拖拽
@@ -437,6 +558,8 @@ impl Ctl {
                 self.on_click();
             } else if (cursor.0 - px).abs() > DRAG_THRESHOLD || (cursor.1 - py).abs() > DRAG_THRESHOLD {
                 self.press = None;
+                // 用户自己挪了，就不再「全屏结束后回原来那块屏」
+                self.fs_origin = None;
                 self.mode = Mode::Drag {
                     gx: px as f64 - self.cx,
                     gy: py as f64 - self.fy,
@@ -594,19 +717,37 @@ impl Ctl {
         self.cx += vx * dt;
         self.fy += vy * dt;
 
-        let vs = win::virtual_screen();
+        // 只能待在真实存在的（能去的）屏幕区域里：几块屏大小不一时中间的空隙、限定显示器时别的屏，都当墙
         let half = w * 0.5;
-        if self.cx - half < vs.l as f64 {
-            self.cx = vs.l as f64 + half;
-            vx = vx.abs() * 0.5;
-        }
-        if self.cx + half > vs.r as f64 {
-            self.cx = vs.r as f64 - half;
-            vx = -vx.abs() * 0.5;
-        }
-        if self.fy - h < vs.t as f64 {
-            self.fy = vs.t as f64 + h;
-            vy = vy.max(0.0);
+        let body = self.fy - h * 0.5;
+        let allowed: Vec<Monitor> = self.allowed_monitors().into_iter().cloned().collect();
+        let inside = |x: f64, y: f64| allowed.iter().any(|m| screens::contains(m, x, y));
+        if !inside(self.cx, body) {
+            if let Some(m) = screens::at_or_nearest(&allowed, self.cx, body) {
+                let (x, y, hit_x, hit_y) = screens::clamp_into(m, self.cx, self.fy, half, h);
+                if hit_x {
+                    vx = if x > self.cx { vx.abs() } else { -vx.abs() } * 0.5;
+                }
+                if hit_y && y > self.fy {
+                    vy = vy.max(0.0); // 顶到头
+                }
+                self.cx = x;
+                self.fy = y;
+            }
+        } else if let Some(m) = allowed.iter().find(|m| screens::contains(m, self.cx, body)) {
+            // 身体半边伸出屏幕、旁边又没有能去的屏：弹回来
+            if !inside(self.cx - half, body) && self.cx - half < m.full.l as f64 {
+                self.cx = m.full.l as f64 + half;
+                vx = vx.abs() * 0.5;
+            }
+            if !inside(self.cx + half, body) && self.cx + half > m.full.r as f64 {
+                self.cx = m.full.r as f64 - half;
+                vx = -vx.abs() * 0.5;
+            }
+            if !inside(self.cx, self.fy - h) && self.fy - h < m.full.t as f64 {
+                self.fy = m.full.t as f64 + h;
+                vy = vy.max(0.0);
+            }
         }
 
         if vy > 0.0 {

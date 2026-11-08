@@ -140,6 +140,8 @@ pub fn run() {
     let shared: SharedState = Arc::new(Mutex::new(Shared {
         work_mode: cfg.work_mode,
         hide_on_fullscreen: cfg.hide_on_fullscreen,
+        screen_scope: cfg.pet_screen.clone(),
+        fs_switch: cfg.fullscreen_switch,
         ..Default::default()
     }));
     let store = store::Store::open(&config::data_dir().join("data.db")).expect("打开数据库失败");
@@ -260,9 +262,20 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("启动 Perch 失败")
-        .run(|_, event| {
+        .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 tts::stop_service();
+                // 记下桌宠在哪块屏，下次从这里落下
+                let state = app.state::<AppState>();
+                let place = state.shared.lock().unwrap().place.clone();
+                if let Some((screen, x)) = place {
+                    let mut cfg = state.config.lock().unwrap();
+                    let p = config::PetPlace { screen, x };
+                    if cfg.pet_place.as_ref() != Some(&p) {
+                        cfg.pet_place = Some(p);
+                        config::save(&cfg);
+                    }
+                }
             }
         });
 }

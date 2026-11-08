@@ -15,6 +15,12 @@ pub struct Config {
     pub scale: f64,
     pub work_mode: bool,
     pub hide_on_fullscreen: bool,
+    /// 只在这块显示器上活动（设备名，比如 \\.\DISPLAY1）；为空表示所有显示器
+    pub pet_screen: Option<String>,
+    /// 所在显示器有全屏程序时换到别的显示器，而不是隐藏
+    pub fullscreen_switch: bool,
+    /// 上次在哪块屏、横向位置，下次启动从这里落下
+    pub pet_place: Option<PetPlace>,
     /// 时区名（比如 Asia/Tokyo）；为空跟随系统（见 clock.rs）
     pub timezone: Option<String>,
     pub providers: Vec<Provider>,
@@ -32,6 +38,15 @@ pub struct Config {
     pub proactive: ProactiveParams,
     /// 桌面感知：按需看屏等（见 awareness/）
     pub awareness: AwarenessParams,
+}
+
+/// 桌宠上次待的地方
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PetPlace {
+    /// 显示器设备名
+    pub screen: String,
+    /// 在工作区里的横向位置，0 左边 ~ 1 右边
+    pub x: f64,
 }
 
 /// 接入 Claude Code / Codex / DeepSeek Harness，汇报它们的工作状态
@@ -552,6 +567,9 @@ impl Default for Config {
             scale: 0.75,
             work_mode: false,
             hide_on_fullscreen: true,
+            pet_screen: None,
+            fullscreen_switch: false,
+            pet_place: None,
             timezone: None,
             providers: Vec::new(),
             roles: Roles::default(),

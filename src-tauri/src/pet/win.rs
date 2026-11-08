@@ -5,7 +5,7 @@ use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HDC, HMONITOR, MONITORINFO,
+    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO,
     MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
@@ -41,9 +41,12 @@ impl From<RECT> for Rect {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Monitor {
     pub handle: isize,
+    /// 设备名，比如 \\.\DISPLAY1；记住「在哪块屏」时用它（句柄重启后会变）
+    pub name: String,
+    pub primary: bool,
     pub full: Rect,
     pub work: Rect,
 }
@@ -239,14 +242,17 @@ pub fn virtual_screen() -> Rect {
 }
 
 unsafe extern "system" fn monitor_cb(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> BOOL {
+    use windows::Win32::Graphics::Gdi::MONITORINFOEXW;
     let out = &mut *(data.0 as *mut Vec<Monitor>);
-    let mut info = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    if GetMonitorInfoW(m, &mut info).as_bool() {
+    let mut ex = MONITORINFOEXW::default();
+    ex.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    if GetMonitorInfoW(m, &mut ex as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool() {
+        let info = ex.monitorInfo;
+        let len = ex.szDevice.iter().position(|&c| c == 0).unwrap_or(ex.szDevice.len());
         out.push(Monitor {
             handle: m.0 as isize,
+            name: String::from_utf16_lossy(&ex.szDevice[..len]),
+            primary: info.dwFlags & 1 != 0,
             full: info.rcMonitor.into(),
             work: info.rcWork.into(),
         });
@@ -264,10 +270,6 @@ pub fn monitors() -> Vec<Monitor> {
 
 pub fn monitor_of_window(raw: isize) -> isize {
     unsafe { MonitorFromWindow(hwnd(raw), MONITOR_DEFAULTTONEAREST).0 as isize }
-}
-
-pub fn monitor_at_point(x: i32, y: i32) -> isize {
-    unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST).0 as isize }
 }
 
 #[cfg(test)]

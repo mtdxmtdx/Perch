@@ -1,6 +1,7 @@
 pub mod controller;
 pub mod fullscreen;
 pub mod hittest;
+pub mod screens;
 pub mod surfaces;
 pub mod win;
 
@@ -61,6 +62,14 @@ pub struct Shared {
     pub fullscreen: bool,
     /// agent 状态标签窗口的物理像素尺寸；(0, 0) 表示没有要显示的标签
     pub status_size: (i32, i32),
+    /// 只在这块显示器上活动（设备名）；None 表示所有显示器
+    pub screen_scope: Option<String>,
+    /// 所在显示器全屏时换到别的显示器
+    pub fs_switch: bool,
+    /// 托盘里点了「移到显示器 N」
+    pub move_to: Option<String>,
+    /// 现在在哪块屏、横向位置（0~1），退出时记下来
+    pub place: Option<(String, f64)>,
 }
 
 pub type SharedState = Arc<Mutex<Shared>>;
