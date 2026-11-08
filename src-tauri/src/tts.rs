@@ -276,7 +276,7 @@ async fn play_pieces(
         if interrupted() {
             break;
         }
-        let audio = match synthesize(cfg, &piece, lang).await.and_then(|wav| decode_wav(&wav)) {
+        let mut audio = match synthesize(cfg, &piece, lang).await.and_then(|wav| decode_wav(&wav)) {
             Ok(a) => a,
             Err(e) => {
                 // 后面的句子失败时已经读了一部分，只记下来
@@ -291,6 +291,9 @@ async fn play_pieces(
         if interrupted() || audio.0.is_empty() {
             continue;
         }
+        // 逐句合成时句子之间补一点停顿：合成服务给的音频句尾几乎没有空白，直接接上会显得急
+        let pause = pause_after(&piece);
+        audio.0.extend(std::iter::repeat_n(0.0, (audio.1 as f64 * pause) as usize));
         let secs = audio.0.len() as f64 / audio.1 as f64;
         talk_until = talk_until.max(Instant::now()) + Duration::from_secs_f64(secs);
         crate::chat::set_speech(app, Some("talk"), Some(talk_until + Duration::from_millis(200)));
@@ -301,6 +304,17 @@ async fn play_pieces(
     drop(tx);
     let played = player.await.map_err(|e| e.to_string())?;
     result.and(played)
+}
+
+/// 一句读完后停多久（秒）：句号、问号、感叹号停得久一点，分号次之，在逗号处切开的停得短
+fn pause_after(piece: &str) -> f64 {
+    let last = piece.trim_end().trim_end_matches(|c: char| "」』”\"’）)".contains(c)).chars().last();
+    match last {
+        Some(c) if "。！？!?….".contains(c) => 0.4,
+        Some(c) if "；;".contains(c) => 0.3,
+        Some(c) if "，,、：:".contains(c) => 0.2,
+        _ => 0.15,
+    }
 }
 
 /// 分句：太短的句子并到下一句（合成太碎会断断续续），太长的在逗号处切开
@@ -1152,6 +1166,16 @@ mod tests {
         let mut m = MarkdownStream::default();
         assert_eq!(m.push("``"), "");
         assert_eq!(m.push("`\nlet a = 1;\n```\n"), "（代码略）\n\n\n");
+    }
+
+    #[test]
+    fn pauses_longer_after_a_full_stop_than_a_comma() {
+        assert_eq!(pause_after("今天天气真好。"), 0.4);
+        assert_eq!(pause_after("「对呀！」"), 0.4);
+        assert_eq!(pause_after("Nice."), 0.4);
+        assert_eq!(pause_after("先这样；"), 0.3);
+        assert_eq!(pause_after("一二三四五，"), 0.2);
+        assert_eq!(pause_after("没有标点"), 0.15);
     }
 
     #[test]
