@@ -308,6 +308,15 @@ export interface SettingsView {
 }
 
 /** 保存设置（和试听）时发给后端的内容 */
+/** 下载和安装在后台进行到哪一步 */
+export interface UpdateStatus {
+  phase: "idle" | "downloading" | "installing" | "ready" | "error";
+  version: string;
+  done: number;
+  total: number;
+  error: string | null;
+}
+
 export interface UpdateCheck {
   current: string;
   newer: boolean;
@@ -412,8 +421,8 @@ export const api = {
   memorySave: (id: number | null, kind: string, content: string) => invoke<void>("memory_save", { id, kind, content }),
   memoryDelete: (id: number) => invoke<void>("memory_delete", { id }),
   updateCheck: () => invoke<UpdateCheck>("update_check"),
-  updateDownload: () => invoke<string>("update_download"),
-  updateInstall: (path: string) => invoke<void>("update_install", { path }),
+  updateStart: () => invoke<void>("update_start"),
+  updateStatus: () => invoke<UpdateStatus>("update_status"),
   ttsLocalVoices: (url: string) => invoke<LocalVoice[]>("tts_local_voices", { url }),
   /** 用还没保存的设置试听一句；给了人格就用这个人格的声音 */
   ttsTest: (settings: SettingsIn, text: string, persona?: string) =>

@@ -360,16 +360,16 @@ pub async fn update_check(app: AppHandle) -> Result<crate::update::UpdateCheck, 
     crate::update::check(&app).await
 }
 
-/// 下载并校验新版本的安装包，返回路径
+/// 在后台下载并安装新版本，进度通过 update-status 事件发出
 #[tauri::command]
-pub async fn update_download(app: AppHandle) -> Result<String, String> {
-    crate::update::download(&app).await
+pub fn update_start(app: AppHandle) {
+    crate::update::start(&app)
 }
 
-/// 运行安装包，Perch 随后退出
+/// 下载和安装进行到哪一步（设置页打开时接着显示）
 #[tauri::command]
-pub fn update_install(app: AppHandle, path: String) -> Result<(), String> {
-    crate::update::install(&app, &path)
+pub fn update_status() -> crate::update::Status {
+    crate::update::status()
 }
 
 /// 新用户引导卡片是否要显示
