@@ -695,7 +695,7 @@ impl ProactiveTrigger for ScreenGlance {
                 st.glances_today = 0;
             }
         }
-        let st = GLANCE_STATE.lock().unwrap();
+        let mut st = GLANCE_STATE.lock().unwrap();
         if !glance_caps_allow(
             st.glances_today,
             self.daily_cap,
@@ -726,6 +726,12 @@ impl ProactiveTrigger for ScreenGlance {
             });
         }
         if self.on_change {
+            // 启动后还没看过前台窗口：先记下来当起点，不算「刚切过来」（不然每次启动都会看一次屏）
+            if st.last_proc.is_empty() {
+                st.last_proc = proc;
+                st.last_title = title;
+                return None;
+            }
             let changed = proc != st.last_proc || title != st.last_title;
             if changed {
                 return Some(Intent {
@@ -1939,6 +1945,29 @@ mod tests {
         GLANCE_STATE.lock().unwrap().last_try = Some(std::time::Instant::now() - std::time::Duration::from_secs(GLANCE_RETRY_SECS));
         assert!(g.poll(&c).is_some());
         GLANCE_STATE.lock().unwrap().last_try = None;
+
+        // 画面变化：启动后第一次只记下前台窗口，换了窗口才看
+        let mut a2 = a.clone();
+        a2.vision_process_rules.clear();
+        a2.vision_on_significant_change = true;
+        let mut g2 = ScreenGlance::new(&a2);
+        {
+            let mut st = GLANCE_STATE.lock().unwrap();
+            st.last_proc.clear();
+            st.last_title.clear();
+            st.glances_today = 0;
+            st.last_success = None;
+            st.last_try = None;
+        }
+        c.fg_process = Some("claude".into());
+        c.fg_title = Some("Claude".into());
+        assert!(g2.poll(&c).is_none(), "启动后第一次不看");
+        assert!(g2.poll(&c).is_none(), "没换窗口不看");
+        c.fg_process = Some("chrome".into());
+        assert_eq!(g2.poll(&c).and_then(|i| i.glance_kind), Some(GlanceKind::ChangeCheck));
+        let mut st = GLANCE_STATE.lock().unwrap();
+        st.last_proc.clear();
+        st.last_title.clear();
     }
 
     #[test]

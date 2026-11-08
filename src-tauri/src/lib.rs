@@ -19,6 +19,7 @@ mod speak;
 mod store;
 mod tools;
 mod tray;
+mod logfile;
 mod tts;
 mod update;
 mod voice;
@@ -136,6 +137,7 @@ pub fn run() {
     config::migrate_legacy_dir();
     let cfg = config::load();
     clock::set(cfg.timezone.as_deref());
+    logfile::init();
     config::migrate_legacy_keys(&cfg.providers.iter().map(|p| p.id.clone()).collect::<Vec<_>>());
     let shared: SharedState = Arc::new(Mutex::new(Shared {
         work_mode: cfg.work_mode,

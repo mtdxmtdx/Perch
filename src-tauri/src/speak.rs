@@ -25,6 +25,14 @@ pub fn pet_hidden(app: &AppHandle) -> bool {
 /// 桌宠说一句话。title 只用在系统通知上
 pub fn say(app: &AppHandle, title: &str, text: &str, source: Source, notify: bool) {
     let hidden = pet_hidden(app);
+    let bubble_open = app.state::<AppState>().shared.lock().unwrap().bubble_visible;
+    eprintln!(
+        "[speak] {} {source:?} 说了 {} 个字：桌宠{}，气泡{}",
+        crate::logfile::stamp(),
+        text.chars().count(),
+        if hidden { "隐藏中（发系统通知）" } else { "在" },
+        if hidden { "不开" } else if bubble_open { "已经开着" } else { "打开" },
+    );
     if notify || hidden {
         let _ = app.notification().builder().title(title).body(text).show();
     }
