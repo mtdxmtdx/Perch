@@ -76,9 +76,15 @@ pub fn start(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let changed = app3.state::<AppState>().agents.hub.lock().unwrap().tick(Instant::now());
+            let (changed, reports) = app3.state::<AppState>().agents.hub.lock().unwrap().tick(Instant::now());
             if changed {
                 publish(&app3);
+            }
+            for (agent, cwd, r) in reports {
+                eprintln!("[agents] {} {} 的 Computer Use 调用卡住了，当作在等授权", crate::logfile::stamp(), agent.display());
+                let app = app3.clone();
+                let p = params(&app);
+                tauri::async_runtime::spawn(async move { report_out(&app, agent, &cwd, r, &p).await });
             }
         }
     });
@@ -101,6 +107,12 @@ pub fn handle(app: &AppHandle, agent_slug: &str, payload: Value) {
         return;
     }
     let Some(ev) = model::normalize(agent, &payload) else { return };
+    // Computer Use 的授权框不经过钩子，只能看调用卡了多久；记一笔方便核对工具名
+    if let model::Kind::ToolStart { tool } = &ev.kind {
+        if model::is_computer_use(tool) {
+            eprintln!("[agents] {} {} 开始用 {tool}", crate::logfile::stamp(), agent.display());
+        }
+    }
     let cwd = ev.cwd.clone();
     let report = app.state::<AppState>().agents.hub.lock().unwrap().apply(ev, Instant::now());
     publish(app);
