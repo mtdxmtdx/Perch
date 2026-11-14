@@ -208,6 +208,15 @@ const DONE_SHOW: Duration = Duration::from_secs(5);
 const ERROR_SHOW: Duration = Duration::from_secs(10);
 /// 太久没有动静的会话（比如终端被直接关掉、没发 SessionEnd）清理掉
 const STALE: Duration = Duration::from_secs(2 * 3600);
+/// Codex 的 Computer Use 调用跑了这么久还没结束，多半是在等你允许它操作某个程序。
+/// 它的授权框是 Codex 自己弹的，不经过 PermissionRequest 钩子；平时一次调用 90% 在 2 秒内结束
+const COMPUTER_USE_WAIT: Duration = Duration::from_secs(6);
+
+/// Codex 的 Computer Use 工具（MCP 服务 cua_repl）
+pub fn is_computer_use(tool: &str) -> bool {
+    let t = tool.to_lowercase();
+    t.contains("cua_repl") || t.contains("computer_use") || t.contains("computer-use")
+}
 
 #[derive(Default)]
 pub struct Hub {
@@ -279,9 +288,11 @@ impl Hub {
         }
     }
 
-    /// 完成 / 出错状态过一会儿回到待机；清理太久没动静的会话
-    pub fn tick(&mut self, now: Instant) -> bool {
+    /// 完成 / 出错状态过一会儿回到待机；清理太久没动静的会话；
+    /// Codex 的 Computer Use 调用卡住太久时当作在等你授权。返回 (状态有没有变, 要汇报的事)
+    pub fn tick(&mut self, now: Instant) -> (bool, Vec<(Agent, String, Report)>) {
         let mut changed = false;
+        let mut reports = Vec::new();
         self.sessions.retain(|_, s| {
             let keep = now.duration_since(s.updated) < STALE;
             changed |= !keep;
@@ -297,8 +308,18 @@ impl Hub {
                 s.status = Status::Idle;
                 changed = true;
             }
+            let waiting_on_computer_use = s.agent == Agent::Codex
+                && s.status == Status::Working
+                && s.tool.as_deref().is_some_and(is_computer_use)
+                && now.duration_since(s.updated) >= COMPUTER_USE_WAIT;
+            if waiting_on_computer_use {
+                // 调用结束（PostToolUse）时会回到「思考」
+                s.status = Status::Attention;
+                changed = true;
+                reports.push((s.agent, s.cwd.clone(), Report::NeedPermission { tool: Some("Computer Use".into()) }));
+            }
         }
-        changed
+        (changed, reports)
     }
 
     /// 所有会话合并成一个桌宠动画：等待授权 > 出错 > 工作中 > 思考 > 完成
@@ -333,6 +354,31 @@ mod tests {
 
     fn ev(v: Value) -> AgentEvent {
         normalize(Agent::ClaudeCode, &v).unwrap()
+    }
+
+    #[test]
+    fn codex_computer_use_stuck_long_means_waiting_for_permission() {
+        let t0 = Instant::now();
+        let mut hub = Hub::default();
+        let ev = |kind: Kind| AgentEvent { agent: Agent::Codex, session_id: "s".into(), cwd: "D:\\proj".into(), kind };
+        hub.apply(ev(Kind::Prompt), t0);
+        hub.apply(ev(Kind::ToolStart { tool: "mcp__cua_repl__js".into() }), t0);
+        // 平时很快就结束：不提醒
+        assert!(hub.tick(t0 + Duration::from_secs(3)).1.is_empty());
+        // 卡住 6 秒：当作在等授权，只提醒一次
+        let (changed, reports) = hub.tick(t0 + Duration::from_secs(7));
+        assert!(changed);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].2, Report::NeedPermission { tool: Some("Computer Use".into()) });
+        assert_eq!(hub.pet_anim(), Some("attention"));
+        assert!(hub.tick(t0 + Duration::from_secs(9)).1.is_empty());
+        // 允许以后调用结束：回到思考
+        hub.apply(ev(Kind::ToolEnd), t0 + Duration::from_secs(10));
+        assert_eq!(hub.sessions.values().next().unwrap().status, Status::Thinking);
+        // 别的工具跑得久不算
+        hub.apply(ev(Kind::ToolStart { tool: "Bash".into() }), t0 + Duration::from_secs(11));
+        assert!(hub.tick(t0 + Duration::from_secs(60)).1.is_empty());
+        assert!(is_computer_use("mcp__cua_repl__js") && !is_computer_use("exec_command"));
     }
 
     #[test]
@@ -404,7 +450,7 @@ mod tests {
         assert_eq!(r, Some(Report::Done { final_message: "好了".into(), seconds: 42 }));
         assert_eq!(hub.pet_anim(), Some("done"));
         // 完成动画过一会儿消失
-        assert!(hub.tick(t0 + Duration::from_secs(60)));
+        assert!(hub.tick(t0 + Duration::from_secs(60)).0);
         assert_eq!(hub.pet_anim(), None);
         hub.apply(mk(Kind::SessionEnd), t0);
         assert!(hub.sessions.is_empty());
