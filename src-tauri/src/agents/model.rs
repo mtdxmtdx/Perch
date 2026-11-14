@@ -62,6 +62,8 @@ fn from_hook_payload(agent: Agent, v: &Value) -> Option<AgentEvent> {
         "UserPromptSubmit" => Kind::Prompt,
         "PreToolUse" => Kind::ToolStart { tool: s(v, "tool_name") },
         "PostToolUse" | "PostToolUseFailure" => Kind::ToolEnd,
+        // Codex 开了「自动审批」时，审批请求交给审核代理处理，不会停下来问人：当作还在干活
+        "PermissionRequest" if agent == Agent::Codex && codex_auto_review(v) => Kind::ToolStart { tool: s(v, "tool_name") },
         "PermissionRequest" => Kind::NeedPermission { tool: Some(s(v, "tool_name")).filter(|t| !t.is_empty()) },
         "Notification" => {
             // 只关心"等你授权"；空闲提醒等其他通知忽略
@@ -80,6 +82,66 @@ fn from_hook_payload(agent: Agent, v: &Value) -> Option<AgentEvent> {
         _ => return None,
     };
     Some(AgentEvent { agent, session_id: s(v, "session_id"), cwd: s(v, "cwd"), kind })
+}
+
+/// 往回最多读多少字节找这一轮的 turn_context（会话记录可能很大）
+const ROLLOUT_TAIL_MAX: u64 = 16 * 1024 * 1024;
+
+/// 这次 Codex 审批请求会不会由审核代理自动处理。
+/// 钩子数据里没有这个信息，要看会话记录（transcript_path）里这一轮的 turn_context：
+/// `approvals_reviewer` 为 `auto_review` 时，请求交给审核代理，不问人。读不到就当作要问人（照旧提醒）
+fn codex_auto_review(v: &Value) -> bool {
+    let path = s(v, "transcript_path");
+    if path.is_empty() {
+        return false;
+    }
+    let turn = s(v, "turn_id");
+    read_rollout_tail(std::path::Path::new(&path))
+        .and_then(|tail| rollout_reviewer(&tail, Some(turn.as_str()).filter(|t| !t.is_empty())))
+        .is_some_and(|r| r == "auto_review")
+}
+
+/// 从文件末尾往前读，直到读到一个 turn_context 或者读满上限
+fn read_rollout_tail(path: &std::path::Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut size = 256 * 1024u64;
+    loop {
+        let start = len.saturating_sub(size);
+        f.seek(SeekFrom::Start(start)).ok()?;
+        let mut buf = Vec::new();
+        f.by_ref().take(len - start).read_to_end(&mut buf).ok()?;
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        if text.contains("\"turn_context\"") || start == 0 || size >= ROLLOUT_TAIL_MAX {
+            return Some(text);
+        }
+        size = (size * 4).min(ROLLOUT_TAIL_MAX);
+    }
+}
+
+/// 在会话记录的末尾里找这一轮（turn_id 对得上的；对不上就用最后一个）的审批方式
+pub fn rollout_reviewer(tail: &str, turn_id: Option<&str>) -> Option<String> {
+    let mut last: Option<String> = None;
+    for line in tail.lines().rev() {
+        if !line.contains("\"turn_context\"") {
+            continue;
+        }
+        let Ok(o) = serde_json::from_str::<Value>(line) else { continue }; // 开头那行可能被截断
+        if o.get("type").and_then(Value::as_str) != Some("turn_context") {
+            continue;
+        }
+        let p = o.get("payload").unwrap_or(&Value::Null);
+        let reviewer = p.get("approvals_reviewer").and_then(Value::as_str).unwrap_or("user").to_string();
+        match turn_id {
+            Some(t) if p.get("turn_id").and_then(Value::as_str) == Some(t) => return Some(reviewer),
+            Some(_) => {
+                last.get_or_insert(reviewer);
+            }
+            None => return Some(reviewer),
+        }
+    }
+    last
 }
 
 /// DSH 插件发来的是已经简化过的事件
@@ -271,6 +333,38 @@ mod tests {
 
     fn ev(v: Value) -> AgentEvent {
         normalize(Agent::ClaudeCode, &v).unwrap()
+    }
+
+    #[test]
+    fn codex_auto_review_is_read_from_the_turn_context() {
+        let ctx = |turn: &str, reviewer: &str| {
+            json!({ "timestamp": "t", "type": "turn_context", "payload": { "turn_id": turn, "approval_policy": "on-request", "approvals_reviewer": reviewer } })
+                .to_string()
+        };
+        let other = json!({ "type": "response_item", "payload": { "text": "\"turn_context\" 出现在正文里" } }).to_string();
+        let tail = format!("{{\"type\":\"turn_co\n{}\n{}\n{}\n{}", ctx("t1", "user"), other, ctx("t2", "auto_review"), other);
+        assert_eq!(rollout_reviewer(&tail, Some("t2")).as_deref(), Some("auto_review"));
+        assert_eq!(rollout_reviewer(&tail, Some("t1")).as_deref(), Some("user"));
+        // turn_id 对不上（比如记录还没写到这一轮）：用最后一个
+        assert_eq!(rollout_reviewer(&tail, Some("t9")).as_deref(), Some("auto_review"));
+        assert_eq!(rollout_reviewer(&tail, None).as_deref(), Some("auto_review"));
+        assert_eq!(rollout_reviewer(&other, None), None);
+
+        // 整条链路：自动审批时当作在干活，否则提醒
+        let dir = std::env::temp_dir().join(format!("perch-rollout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("rollout.jsonl");
+        let ev = |path: &std::path::Path| {
+            json!({ "hook_event_name": "PermissionRequest", "session_id": "s", "cwd": "D:\\p", "tool_name": "Bash",
+                    "turn_id": "t2", "transcript_path": path.to_string_lossy() })
+        };
+        std::fs::write(&file, format!("{}\n{}\n", ctx("t2", "auto_review"), other)).unwrap();
+        assert_eq!(normalize(Agent::Codex, &ev(&file)).unwrap().kind, Kind::ToolStart { tool: "Bash".into() });
+        std::fs::write(&file, format!("{}\n", ctx("t2", "user"))).unwrap();
+        assert_eq!(normalize(Agent::Codex, &ev(&file)).unwrap().kind, Kind::NeedPermission { tool: Some("Bash".into()) });
+        // 读不到记录：照旧提醒
+        assert_eq!(normalize(Agent::Codex, &ev(&dir.join("missing.jsonl"))).unwrap().kind, Kind::NeedPermission { tool: Some("Bash".into()) });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
